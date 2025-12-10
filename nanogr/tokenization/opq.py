@@ -105,5 +105,5 @@ class OPQTokenizer(AbstractTokenizer):
             log(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
             item2sem_ids = json.load(open(sem_ids_path, 'r'))
 
-        item2tokens = self._sem_ids_to_tokens(item2sem_ids)
+        item2tokens = self._sid_shift(item2sem_ids)
         return item2tokens

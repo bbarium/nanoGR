@@ -4,9 +4,6 @@ from torch import nn
 from torch.nn import functional as F
 
 
-from nanogr.utils import kmeans
-
-
 class MLP(nn.Module):
     def __init__(self, layers: list, dropout: float=0.0):
         super(MLP, self).__init__()
@@ -49,18 +46,10 @@ class VectorQuantization(nn.Module):
 
         self.centroids = nn.Parameter(torch.zeros(codebook_size, hid_channels), requires_grad=True)
 
-    def initialization(self, data: Tensor):
-        if self.enable_kmeans_init:
-            centers = kmeans(data, self.codebook_size, self.kmeans_iters)
-            self.centroids.data.copy_(centers)
-        else:
-            nn.init.uniform_(self.centroids, -1.0/self.codebook_size, 1.0/self.codebook_size)
-        self.is_initialized = True
-
     def forward(self, x):
         embd_tmp = x
-        if not self.is_initialized and self.training:
-            self.initialization(embd_tmp)
+        # if not self.is_initialized and self.training:
+        #     self.initialization(embd_tmp)
 
         # TODO：这个Eulidean距离度量还需要再修改
         d = torch.sum(embd_tmp**2, dim=1, keepdim=True) + \
@@ -138,7 +127,7 @@ class RQVAE(nn.Module):
 
     def forward(self, x):
         x = self.encoder(x)
-        x = self.bn(x)
+        # x = self.bn(x)
         embd, rq_loss, indices = self.rq(x)
         out = self.decoder(embd)
         return out, rq_loss, indices

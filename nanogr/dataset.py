@@ -349,11 +349,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
             json.dump(id_mapping, f)
         return all_item_seqs, id_mapping
 
-    def _load_metadata(
-        self,
-        path: str,
-        item2id: dict
-    ) -> dict:
+    def _load_metadata(self, path: str, item2id: dict) -> dict:
         """
         Load metadata from a given path and filter it based on the provided data maps.
 

@@ -1,3 +1,4 @@
+import os
 import argparse
 import torch
 
@@ -10,9 +11,8 @@ from transformers import (
 )
 
 from nanogr.dataset import AmazonReviews2014
-from nanogr.tokenization import RQVAETokenizer
-# from nanogr.trainer import Trainer
-# from nanogr.gr_models import TIGER
+
+from nanogr.evaluator import Evaluator
 from nanogr.encoder import encode_sent_to_emb
 from nanogr.utils import seed_everything
 
@@ -65,64 +65,13 @@ def gr_pipeline():
 
     # Emb2SID
     training_item_mask = raw_dataset.training_item_mask()
-    # tokenizer = OPQTokenizer(
-    #     output_path=args.output_path,
-    #     num_codebooks=args.num_codebooks, 
-    #     codebook_size=args.codebook_size, 
-    #     max_item_seq_len=args.max_item_seq_len,
-    #     dataset=raw_dataset
-    # )
-    tokenizer = RQVAETokenizer(
-        hid_channels=args.hid_channels,
-        num_codebooks=args.num_codebooks,
-        codebook_size=args.codebook_size,
-        mlp_channels=args.mlp_channels,
-        dropout=args.dropout,
-        quant_loss_weight=args.quant_loss_weight,
-        beta=args.beta,
-        kmeans_iters=args.kmeans_iters,
-        lr=args.lr,
-        wd=args.wd,
-        epochs=args.epochs,
-        num_warmup_steps=args.num_warmup_steps,
-        eval_step=args.eval_step,
-        batch_size=args.train_batch_size,
-        max_item_seq_len=args.max_item_seq_len,
-        output_path=args.output_path,
-        dataset=raw_dataset,
-        device=device
-    )
-    item2tokens = tokenizer.emb_to_sid(sent_emb)
-    tokenized_datasets = tokenizer.textualize(split_datasets, item2tokens)
-    # torch.save(tokenized_datasets, 'textualized_datasets.pt')
-    # tokenized_datasets = torch.load('./textualized_datasets.pt', weights_only=True)
     
-    # if os.path.exists('./tokenized_datasets.pt'):
-    #     tokenized_datasets = torch.load('./tokenized_datasets.pt')
+    if os.path.exists('./tokenized_datasets.pt'):
+        tokenized_datasets = torch.load('./tokenized_datasets.pt')
+        item2tokens = tokenized_datasets.item2tokens()
     # else:
     #     tokenized_datasets = tokenizer.tokenize(split_datasets)
     #     torch.save(tokenized_datasets, 'tokenized_datasets.pt')
-    
-    # Create Train, Val and Test Dataloaders
-    # train_dataloader = DataLoader(
-    #     tokenized_datasets['train'],
-    #     batch_size=args.train_batch_size,
-    #     shuffle=True,
-    #     num_workers=8
-    # )
-    # val_dataloader = DataLoader(
-    #     tokenized_datasets['val'],
-    #     batch_size=args.eval_batch_size,
-    #     shuffle=False,
-    #     num_workers=8
-    # )
-    # test_dataloader = DataLoader(
-    #     tokenized_datasets['test'],
-    #     batch_size=args.eval_batch_size,
-    #     shuffle=False,
-    #     num_workers=8
-    # )
-    # dataloaders = (train_dataloader, val_dataloader, test_dataloader)
     
     # Instantiate LLM-driven Model
     new_tokens = []
@@ -132,9 +81,9 @@ def gr_pipeline():
     tokenizer = AutoTokenizer.from_pretrained(args.gr_path)
     num_new_tokens = tokenizer.add_tokens(list(new_tokens))
     new_vocab_size = len(tokenizer)
+    # logg
     tokenizer.model_max_length = args.model_max_length
     
-    # model = AutoModelForCausalLM.from_pretrained(args.gr_path).to(device)
     model = AutoModelForCausalLM.from_pretrained(args.gr_path, device_map='auto')
     model.resize_token_embeddings(new_vocab_size)
     
@@ -142,7 +91,7 @@ def gr_pipeline():
     
     # Train and Eval Steps
     # metrics = Trainer(args, model, tokenizer).fit(dataloaders)
-    
+    evaluator = Evaluator()
     collator = Collator(tokenizer)
     trainer = Trainer(
         model=model,
@@ -168,6 +117,7 @@ def gr_pipeline():
             save_total_limit=2,
             load_best_model_at_end=True,
             eval_delay= 1,
+            compute_metrics=evaluator.calculate_metrics
         ),
         tokenizer=tokenizer,
         data_collator=collator,
@@ -183,10 +133,10 @@ if __name__ == '__main__':
     # Shared parameters
     parse.add_argument('--gpu', type=int, default=0)
     parse.add_argument('--seed', type=int, default=42)
-    parse.add_argument('--per_device_batch_size', type=int, default=32)
+    parse.add_argument('--per_device_batch_size', type=int, default=72)
     parse.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parse.add_argument('--warmup_ratio', type=float, default=0.01)
-    # parse.add_argument('--epochs', type=int, default=200)
+    parse.add_argument('--epochs', type=int, default=200)
     parse.add_argument('--learning_rate', type=float, default=5e-4)
     parse.add_argument('--weight_decay', type=float, default=0.01)
     parse.add_argument('--lr_scheduler_type', type=str, default='cosine')
@@ -209,7 +159,7 @@ if __name__ == '__main__':
     # Parameters of the projector
     parse.add_argument('--lr', type=float, default=0.0001)
     parse.add_argument('--wd', type=float, default=0.0)
-    parse.add_argument('--epochs', type=float, default=5000)
+    # parse.add_argument('--epochs', type=float, default=5000)
     parse.add_argument('--eval_step', type=float, default=100)
     parse.add_argument('--num_warmup_steps', type=int, default=1000)
     parse.add_argument('--train_batch_size', type=float, default=4096)
