@@ -5,8 +5,8 @@ import numpy as np
 
 from .tokenizer import AbstractTokenizer
 
-from nanogr.dataset import AmazonReviewsDataset
-from nanogr.utils import log
+from minigr.dataset import AmazonReviewsDataset
+from minigr.utils import log
 
 
 class OPQTokenizer(AbstractTokenizer):
@@ -32,12 +32,12 @@ class OPQTokenizer(AbstractTokenizer):
     def index_factory(self) -> str:
         return f'OPQ{self.num_codebooks},IVF1,PQ{self.num_codebooks}x{self.n_codebook_bits}'
 
-    def _generate_semantic_id(self, sent_embs, sem_ids_path, train_mask):
+    def _generate_semantic_id(self, sent_embd, sem_ids_path, train_mask):
         """
         Generates semantic IDs using the OPQ algorithm.
 
         Args:
-            sent_embs (numpy.ndarray): Array of sentence embeddings.
+            sent_embd (numpy.ndarray): Array of sentence embeddings.
             sem_ids_path (str): Path to save the generated semantic IDs.
             train_mask (numpy.ndarray): Boolean mask indicating the training samples.
         """
@@ -49,15 +49,15 @@ class OPQTokenizer(AbstractTokenizer):
             co.useFloat16 = self.num_codebooks >= 56
         faiss.omp_set_num_threads(self.faiss_omp_num_threads)
         index = faiss.index_factory(
-            sent_embs.shape[1],
+            sent_embd.shape[1],
             self.index_factory,
             faiss.METRIC_INNER_PRODUCT
         )
         log(f'[TOKENIZER] Training index...')
         if self.opq_use_gpu:
             index = faiss.index_cpu_to_gpu(res, self.opq_gpu_id, index, co)
-        index.train(sent_embs[train_mask])
-        index.add(sent_embs)
+        index.train(sent_embd[train_mask])
+        index.add(sent_embd)
         if self.opq_use_gpu:
             index = faiss.index_gpu_to_cpu(index)
 
@@ -84,7 +84,7 @@ class OPQTokenizer(AbstractTokenizer):
         
         return item2sem_ids
     
-    def emb_to_sid(self, sent_embs, training_item_mask) -> dict:
+    def emb_to_sid(self, sent_embd, training_item_mask) -> dict:
         """
         Initialize the tokenizer.
 
@@ -97,7 +97,7 @@ class OPQTokenizer(AbstractTokenizer):
         sem_ids_path = os.path.join(self.output_path, f'sentence-t5-base_{self.index_factory}.sem_ids')
 
         if not os.path.exists(sem_ids_path):
-            item2sem_ids = self._generate_semantic_id(sent_embs, sem_ids_path, training_item_mask)
+            item2sem_ids = self._generate_semantic_id(sent_embd, sem_ids_path, training_item_mask)
             log(f'[TOKENIZER] Saving semantic IDs to {sem_ids_path}...')
             with open(sem_ids_path, 'w') as f:
                 json.dump(item2sem_ids, f)

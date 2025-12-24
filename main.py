@@ -10,11 +10,11 @@ from transformers import (
     EarlyStoppingCallback
 )
 
-from nanogr.dataset import AmazonReviews2014
+from minigr.dataset import AmazonReviews2014
 
-from nanogr.evaluator import Evaluator
-from nanogr.encoder import encode_sent_to_emb
-from nanogr.utils import seed_everything
+from minigr.evaluator import Evaluator
+from minigr.encoder import encode_sent_to_emb
+from minigr.utils import seed_everything
 
 
 class Collator(object):
@@ -69,9 +69,6 @@ def gr_pipeline():
     if os.path.exists('./tokenized_datasets.pt'):
         tokenized_datasets = torch.load('./tokenized_datasets.pt')
         item2tokens = tokenized_datasets.item2tokens()
-    # else:
-    #     tokenized_datasets = tokenizer.tokenize(split_datasets)
-    #     torch.save(tokenized_datasets, 'tokenized_datasets.pt')
     
     # Instantiate LLM-driven Model
     new_tokens = []
@@ -81,7 +78,7 @@ def gr_pipeline():
     tokenizer = AutoTokenizer.from_pretrained(args.gr_path)
     num_new_tokens = tokenizer.add_tokens(list(new_tokens))
     new_vocab_size = len(tokenizer)
-    # logg
+
     tokenizer.model_max_length = args.model_max_length
     
     model = AutoModelForCausalLM.from_pretrained(args.gr_path, device_map='auto')

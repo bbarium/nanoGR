@@ -8,8 +8,8 @@ from torch.utils.data import DataLoader
 import transformers
 from transformers import AutoTokenizer
 
-from nanogr.utils import Config
-from nanogr.scheduler import get_constant_schedule_with_warmup
+from minigr.utils import Config
+from minigr.scheduler import get_constant_schedule_with_warmup
 
 
 class Trainer:

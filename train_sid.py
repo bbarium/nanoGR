@@ -2,26 +2,28 @@ import argparse
 
 import torch
 
-from nanogr.tokenization import RQVAETokenizer
-from nanogr.dataset import AmazonReviews2014
-from nanogr.encoder import encode_sent_to_emb
-from nanogr.utils import seed_everything
+from hyperopt import tpe, hp, fmin
+
+from minigr.tokenization import RQVAETokenizer
+from minigr.dataset import AmazonReviews2014
+from minigr.encoder import encode_sent_to_emb
+from minigr.utils import seed_everything, create_log_file, log
 
 
-def train():
+def train(hyperparam: dict=None):
+    if hyperparam:
+        for key in hyperparam.keys():
+            if key in args.__dict__.keys():
+                args.__dict__[key] = hyperparam[key]
+    log(args)
+    
     seed_everything(args.seed)
     
+    # Load raw dataset
     raw_dataset = AmazonReviews2014(args.data_path, args.category, args.metadata)
     
+    # Generate item embeddings from metadata
     sent_emb = encode_sent_to_emb(raw_dataset, args.projector_path, args.proj_batch_size, device)
-    
-    # tokenizer = OPQTokenizer(
-    #     output_path=args.output_path,
-    #     num_codebooks=args.num_codebooks, 
-    #     codebook_size=args.codebook_size, 
-    #     max_item_seq_len=args.max_item_seq_len,
-    #     dataset=raw_dataset
-    # )
     
     tokenizer = RQVAETokenizer(
         id2item=raw_dataset.id_mapping['id2item'],
@@ -41,14 +43,12 @@ def train():
         eval_step=args.eval_step,
         batch_size=args.train_batch_size,
         category=args.category,
-        device=device,
     )
-    item2tokens = tokenizer.emb_to_sid(sent_emb)
+    item2tokens = tokenizer.emb_to_sid(sent_emb, device)
     
     metrics = None
-    # metrics = tokenizer.evaluate()
-    return metrics
-    
+    return tokenizer.loss
+
 
 if __name__ == '__main__':
     parse = argparse.ArgumentParser()
@@ -65,12 +65,12 @@ if __name__ == '__main__':
     parse.add_argument('--split_strategy', type=str, default='leave_one_out')
     
     # Parameters of the projector
-    parse.add_argument('--lr', type=float, default=0.00001)
-    parse.add_argument('--wd', type=float, default=0.0)
-    parse.add_argument('--epochs', type=float, default=5000)
+    parse.add_argument('--lr', type=float, default=0.0001)
+    parse.add_argument('--wd', type=float, default=0.01)
+    parse.add_argument('--epochs', type=float, default=3000)
     parse.add_argument('--eval_step', type=float, default=100)
     parse.add_argument('--num_warmup_steps', type=int, default=1000)
-    parse.add_argument('--train_batch_size', type=float, default=99999)
+    parse.add_argument('--train_batch_size', type=float, default=4096)
     parse.add_argument('--eval_batch_size', type=float, default=4096)
     parse.add_argument('--proj_batch_size', type=int, default=512)
     
@@ -78,14 +78,30 @@ if __name__ == '__main__':
     parse.add_argument('--num_codebooks', type=int, default=3)
     parse.add_argument('--codebook_size', type=int, default=256)
     parse.add_argument('--hid_channels', type=int, default=128)
-    parse.add_argument('--mlp_channels', type=int, nargs='+', default=[768, 256, 256, 128])
-    parse.add_argument('--dropout', type=float, default=0.5)
-    parse.add_argument('--quant_loss_weight', type=float, default=0.5)
+    parse.add_argument('--mlp_channels', type=int, nargs='+', default=[768, 256, 128])
     parse.add_argument('--kmeans_init', type=bool, default=True)
-    parse.add_argument('--kmeans_iters', type=int, default=100)
+    parse.add_argument('--kmeans_iters', type=int, default=300)
+    parse.add_argument('--dropout', type=float, default=0.5)
+    parse.add_argument('--quant_loss_weight', type=float, default=1.0)
     parse.add_argument('--beta', type=float, default=0.25)
     args = parse.parse_args()
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
-    train()
+    # train()
+    create_log_file("/home/hzzhang/nanoGR/logs")
+    
+    space = {
+        'lr': hp.choice('lr', [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]),
+        'wd': hp.choice('wd', [0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]),
+        'dropout': hp.choice('dropout', [0.0, 0.2, 0.4, 0.6]),
+        'quant_loss_weight': hp.choice('quant_loss_weight', [0.2, 0.4, 0.6, 0.8, 1.0]),
+        'beta': hp.choice('beta', [0.25, 0.5, 0.75, 1.0]),
+    }
+    best = fmin(
+        fn=train,
+        space=space,
+        algo=tpe.suggest,
+        max_evals=50
+    )
+    print(best)

@@ -1,17 +1,22 @@
+import os
 import random
 import re
 import html
 import yaml
 import os.path as osp
 import numpy as np
+from datetime import datetime
 from copy import deepcopy
 from pathlib import Path
 from typing import Union
 from sklearn.cluster import KMeans
+
+import logzero
 from logzero import logger
 
 import torch
 import torch.nn as nn
+from torch.types import Tensor
 
 
 def seed_everything(seed: int):
@@ -20,6 +25,15 @@ def seed_everything(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
+
+
+def create_log_file(log_dir: str, filename: str=None):
+    if not os.path.exists(log_dir):
+        os.mkdir(log_dir)
+    
+    if filename is None:
+        filename = datetime.strftime(datetime.now(), "%Y%m%d") + ".log"
+    logzero.logfile(os.path.join(log_dir, filename))
 
 
 def log(message, level='info'):
@@ -127,20 +141,13 @@ def clean_text(raw_text: str) -> str:
     return text
 
 
-def kmeans(
-    samples,
-    num_clusters,
-    num_iters = 10,
-):
-    B, dim, dtype, device = samples.shape[0], samples.shape[-1], samples.dtype, samples.device
-    x = samples.cpu().detach().numpy()
+def kmeans(feat: Tensor, num_clusters: int, num_iters: int) -> Tensor:
+    device = feat.device
+    x = feat.cpu().detach().numpy()
 
-    cluster = KMeans(n_clusters = num_clusters, max_iter = num_iters).fit(x)
-
-    centers = cluster.cluster_centers_
-    tensor_centers = torch.from_numpy(centers).to(device)
-
-    return tensor_centers
+    cluster = KMeans(n_clusters=num_clusters, n_init=10, random_state=0).fit(x)
+    centers = torch.from_numpy(cluster.cluster_centers_).to(device)
+    return centers
 
 
 @torch.no_grad()

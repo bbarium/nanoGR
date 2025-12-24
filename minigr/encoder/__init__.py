@@ -6,8 +6,8 @@ from torch import device
 
 from sentence_transformers import SentenceTransformer
 
-from nanogr.dataset import AmazonReviewsDataset
-from nanogr.utils import log
+from minigr.dataset import AmazonReviewsDataset
+from minigr.utils import log
 
 
 def encode_sent_to_emb(
@@ -31,7 +31,7 @@ def encode_sent_to_emb(
     sent_emb_path = osp.join(output_path, f'{dataset.name}.sentence-t5-base.sent_emb')
     if osp.exists(sent_emb_path):
         log(f'[TOKENIZER] Loading sentence embeddings from {sent_emb_path}...')
-        sent_embs = np.fromfile(sent_emb_path, dtype=np.float32).reshape(-1, sent_emb_dim)
+        sent_embd = np.fromfile(sent_emb_path, dtype=np.float32).reshape(-1, sent_emb_dim)
     else:
         log(f'[TOKENIZER] Encoding sentence embeddings...')    
         assert dataset.process_mode == 'sentence', 'TIGERTokenizer only supports sentence metadata.'
@@ -43,7 +43,7 @@ def encode_sent_to_emb(
         if 'sentence' in sent_emb_model:
             sent_emb_model = SentenceTransformer(sent_emb_model).to(device)
 
-            sent_embs = sent_emb_model.encode(
+            sent_embd = sent_emb_model.encode(
                 meta_sentences,
                 convert_to_numpy=True,
                 batch_size=batch_size,
@@ -54,6 +54,6 @@ def encode_sent_to_emb(
             pass
         else:
             raise NotImplementedError()
-    log(f'[TOKENIZER] Sentence embeddings shape: {sent_embs.shape}')
-    sent_embs.tofile(sent_emb_path)
-    return sent_embs
+    log(f'[TOKENIZER] Sentence embeddings shape: {sent_embd.shape}')
+    sent_embd.tofile(sent_emb_path)
+    return sent_embd
