@@ -10,11 +10,11 @@ from minigr.encoder import encode_sent_to_emb
 from minigr.utils import seed_everything, create_log_file, log
 
 
-def train(hyperparam: dict=None):
-    if hyperparam:
-        for key in hyperparam.keys():
+def train(params: dict=None):
+    if params:
+        for key in params.keys():
             if key in args.__dict__.keys():
-                args.__dict__[key] = hyperparam[key]
+                args.__dict__[key] = params[key]
     log(args)
     
     seed_everything(args.seed)
@@ -23,12 +23,14 @@ def train(hyperparam: dict=None):
     raw_dataset = AmazonReviews2014(args.data_path, args.category, args.metadata)
     
     # Generate item embeddings from metadata
-    sent_emb = encode_sent_to_emb(raw_dataset, args.projector_path, args.proj_batch_size, device)
+    sent_embd = encode_sent_to_emb(raw_dataset, args.projector_path, args.proj_batch_size, device)
+    sent_embd = torch.from_numpy(sent_embd)
     
     tokenizer = RQVAETokenizer(
         id2item=raw_dataset.id_mapping['id2item'],
         num_codebooks=args.num_codebooks,
         codebook_size=args.codebook_size,
+        in_channels=sent_embd.size(1),
         hid_channels=args.hid_channels,
         mlp_channels=args.mlp_channels,
         dropout=args.dropout,
@@ -44,18 +46,18 @@ def train(hyperparam: dict=None):
         batch_size=args.train_batch_size,
         category=args.category,
     )
-    item2tokens = tokenizer.emb_to_sid(sent_emb, device)
+    item2tokens = tokenizer.emb_to_sid(sent_embd, device)
     
     metrics = None
-    return tokenizer.loss
+    return metrics
 
 
 if __name__ == '__main__':
     parse = argparse.ArgumentParser()
     # Shared parameters
     parse.add_argument('--gpu', type=int, default=0)
-    parse.add_argument('--seed', type=int, default=42)
-    parse.add_argument('--data_path', type=str, default='/home/hzzhang/private_data/AmazonReviews2014')
+    parse.add_argument('--seed', type=int, default=2024)
+    parse.add_argument('--data_path', type=str, default='/home/hzzhang/public_data/amazon_data/AmazonReviews2014')
     parse.add_argument('--output_path', type=str, default='./outputs')
     parse.add_argument('--projector_path', type=str, default='/home/hzzhang/Checkpoints/sentence-t5-base')
     
@@ -65,43 +67,42 @@ if __name__ == '__main__':
     parse.add_argument('--split_strategy', type=str, default='leave_one_out')
     
     # Parameters of the projector
-    parse.add_argument('--lr', type=float, default=0.0001)
-    parse.add_argument('--wd', type=float, default=0.01)
-    parse.add_argument('--epochs', type=float, default=3000)
-    parse.add_argument('--eval_step', type=float, default=100)
-    parse.add_argument('--num_warmup_steps', type=int, default=1000)
-    parse.add_argument('--train_batch_size', type=float, default=4096)
-    parse.add_argument('--eval_batch_size', type=float, default=4096)
+    parse.add_argument('--lr', type=float, default=1e-3)
+    parse.add_argument('--wd', type=float, default=0.0)
+    parse.add_argument('--epochs', type=float, default=5000)
+    parse.add_argument('--eval_step', type=float, default=10)
+    parse.add_argument('--num_warmup_steps', type=int, default=50)
+    parse.add_argument('--train_batch_size', type=float, default=2048)
     parse.add_argument('--proj_batch_size', type=int, default=512)
     
     # Parameters of the tokenizer
     parse.add_argument('--num_codebooks', type=int, default=3)
     parse.add_argument('--codebook_size', type=int, default=256)
-    parse.add_argument('--hid_channels', type=int, default=128)
-    parse.add_argument('--mlp_channels', type=int, nargs='+', default=[768, 256, 128])
+    parse.add_argument('--hid_channels', type=int, default=32)
+    parse.add_argument('--mlp_channels', type=int, nargs='+', default=[256, 128, 64])
     parse.add_argument('--kmeans_init', type=bool, default=True)
     parse.add_argument('--kmeans_iters', type=int, default=300)
-    parse.add_argument('--dropout', type=float, default=0.5)
+    parse.add_argument('--dropout', type=float, default=0.0)
     parse.add_argument('--quant_loss_weight', type=float, default=1.0)
     parse.add_argument('--beta', type=float, default=0.25)
     args = parse.parse_args()
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
-    # train()
-    create_log_file("/home/hzzhang/nanoGR/logs")
+    # create_log_file("/home/hzzhang/nanoGR/logs", 'test.log')
+    train()
     
-    space = {
-        'lr': hp.choice('lr', [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]),
-        'wd': hp.choice('wd', [0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]),
-        'dropout': hp.choice('dropout', [0.0, 0.2, 0.4, 0.6]),
-        'quant_loss_weight': hp.choice('quant_loss_weight', [0.2, 0.4, 0.6, 0.8, 1.0]),
-        'beta': hp.choice('beta', [0.25, 0.5, 0.75, 1.0]),
-    }
-    best = fmin(
-        fn=train,
-        space=space,
-        algo=tpe.suggest,
-        max_evals=50
-    )
-    print(best)
+    # space = {
+    #     'lr': hp.choice('lr', [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]),
+    #     'wd': hp.choice('wd', [0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]),
+    #     'dropout': hp.choice('dropout', [0.0, 0.2, 0.4, 0.6]),
+    #     'quant_loss_weight': hp.choice('quant_loss_weight', [0.2, 0.4, 0.6, 0.8, 1.0]),
+    #     'beta': hp.choice('beta', [0.25, 0.5, 0.75, 1.0]),
+    # }
+    # best = fmin(
+    #     fn=train,
+    #     space=space,
+    #     algo=tpe.suggest,
+    #     max_evals=50
+    # )
+    # print(best)

@@ -14,7 +14,7 @@ def encode_sent_to_emb(
     dataset: AmazonReviewsDataset,
     sent_emb_model: str,
     batch_size: int,
-    device: device,
+    device: device=None,
     sent_emb_dim: int=768,
     output_path: str='outputs',
 ):

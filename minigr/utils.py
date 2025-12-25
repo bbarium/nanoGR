@@ -25,6 +25,7 @@ def seed_everything(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def create_log_file(log_dir: str, filename: str=None):
@@ -141,11 +142,11 @@ def clean_text(raw_text: str) -> str:
     return text
 
 
-def kmeans(feat: Tensor, num_clusters: int, num_iters: int) -> Tensor:
+def kmeans(feat: Tensor, num_clusters: int, num_iters: int=100) -> Tensor:
     device = feat.device
     x = feat.cpu().detach().numpy()
 
-    cluster = KMeans(n_clusters=num_clusters, n_init=10, random_state=0).fit(x)
+    cluster = KMeans(n_clusters=num_clusters, n_init=10, max_iter=num_iters).fit(x)
     centers = torch.from_numpy(cluster.cluster_centers_).to(device)
     return centers
 

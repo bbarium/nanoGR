@@ -12,18 +12,20 @@ class MLP(nn.Module):
     def __init__(self, layers: list, dropout: float=0.0):
         super(MLP, self).__init__()
         
-        convs = [nn.Linear(layers[0], layers[1])] # in_channels -> hid_channels
-        for i in range(1, len(layers)-1):
-            convs.append(nn.ReLU())
-            convs.append(nn.Linear(layers[i], layers[i+1]))
+        convs = []
+        for i in range(0, len(layers)-1):
             convs.append(nn.Dropout(p=dropout))
+            convs.append(nn.Linear(layers[i], layers[i+1]))
+            if i != len(layers)-2:
+                convs.append(nn.ReLU())
 
         self.mlp = nn.Sequential(*convs)
+        self.reset_parameters()
 
     def reset_parameters(self):
         for module in self.mlp.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_normal_(module.weight.data)
+                nn.init.xavier_normal_(module.weight)
                 if module.bias is not None:
                     module.bias.data.fill_(0.0)
 
@@ -41,21 +43,30 @@ class VectorQuantization(nn.Module):
         self.utilization = None
 
         self.centroids = nn.Embedding(codebook_size, hid_channels)
+        self.centroids.weight.data.zero_()
+        
+    def init_emb(self, data):
+        centers = kmeans(data, self.codebook_size)
+        self.centroids.weight.data.copy_(centers)
+        self.is_initialized = True
 
     def forward(self, x: Tensor):
-        embd_tmp = x
-        distances = torch.cdist(embd_tmp, self.centroids.weight)
+        latent = x.view(-1, self.hid_channels)
+        
+        if not self.is_initialized and self.training:
+            self.init_emb(latent)
+        
+        distances = torch.cdist(latent, self.centroids.weight)
         indices = torch.argmin(distances, dim=-1)
-        quantized = self.centroids(indices).view(x.shape) # 
+        quantized = self.centroids(indices).view(x.shape)
 
-        codebook_loss = F.mse_loss(x.detach(), quantized)
-        commitment_loss = F.mse_loss(x, quantized.detach())
+        commitment_loss = F.mse_loss(quantized.detach(), x)
+        codebook_loss = F.mse_loss(quantized, x.detach())
         loss = codebook_loss + self.beta * commitment_loss
+        quantized = x + (quantized - x).detach()
 
         if self.training:
             self.utilization = round(len(torch.unique(indices.detach()))/self.codebook_size, 4) # Update codebook utilization
-        
-        quantized = x + (quantized - x).detach()
         return quantized, loss, indices
 
 
@@ -75,7 +86,7 @@ class ResidualVQ(nn.Module):
     def forward(self, x: Tensor):
         token_indices = []
         quantization_loss = 0
-        residual, quantized_out = x, torch.zeros_like(x)
+        residual, quantized_out = x, 0
         for vq_conv in self.vq_convs:
             quantized, loss, indices = vq_conv(residual)
             residual = residual - quantized
@@ -84,16 +95,18 @@ class ResidualVQ(nn.Module):
             token_indices.append(indices)
             quantization_loss += loss
 
+        quantization_loss = quantization_loss / len(self.vq_convs)
         indices = torch.stack(token_indices, dim=-1)
         return quantized_out, quantization_loss, indices
 
 
 class RQVAE(nn.Module):
     def __init__(self,
+        in_channels: int,
         hid_channels: int,
         num_codebooks: int,
         codebook_size: int,
-        mlp_channels: list=[768, 256, 128, 64],
+        mlp_channels: list=[256, 128, 64],
         dropout: float=0.0,
         quant_loss_weight: float=1.0,
         enable_kmeans_init: bool=True,
@@ -107,10 +120,10 @@ class RQVAE(nn.Module):
         self.enable_norm = enable_norm
         self.enable_kmeans_init = enable_kmeans_init
         self.kmeans_iters = kmeans_iters
-
-        self.encoder = MLP(layers=mlp_channels, dropout=dropout)
-        self.decoder = MLP(layers=mlp_channels[::-1], dropout=dropout)
-        self.bn = nn.BatchNorm1d(hid_channels)
+        
+        channels = [in_channels] + mlp_channels + [hid_channels]
+        self.encoder = MLP(layers=channels, dropout=dropout)
+        self.decoder = MLP(layers=channels[::-1], dropout=dropout)
 
         self.rq = ResidualVQ(codebook_size, num_codebooks, hid_channels, beta)
         
