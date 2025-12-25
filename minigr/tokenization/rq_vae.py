@@ -111,9 +111,10 @@ class RQVAETokenizer(AbstractTokenizer):
         
         # Notice: the dataset splits (training/valid) are just used to evaluation the quality of codebooks. 
         # We will generate SIDs of all items for downstream generative recommandation tasks
-        val_split = int(sent_embd.size(0) * self.val_split)
-        indices_shuffled = torch.randperm(sent_embd.size(0))
-        val_embd, train_embd = sent_embd[indices_shuffled[:val_split], :], sent_embd[indices_shuffled[val_split:], :]
+        # val_split = int(sent_embd.size(0) * self.val_split)
+        # indices_shuffled = torch.randperm(sent_embd.size(0))
+        # val_embd, train_embd = sent_embd[indices_shuffled[:val_split], :], sent_embd[indices_shuffled[val_split:], :]
+        val_embd, train_embd = sent_embd, sent_embd
         train_loader = DataLoader(train_embd, self.batch_size, shuffle=False)
         log(f'Train size: {train_embd.size(0)}, Val size: {val_embd.size(0)}')
         
@@ -130,10 +131,10 @@ class RQVAETokenizer(AbstractTokenizer):
                 best_loss = train_loss
                 PATIENCE = 0
                 
-                item2sem_ids = {}
+                item2sid = {}
                 for i in range(indices.shape[0]):
                     item = self.id2item[i + 1]
-                    item2sem_ids[item] = tuple(indices[i].tolist())
+                    item2sid[item] = tuple(indices[i].tolist())
             else:
                 PATIENCE += 1
             end_time = time.time()
@@ -152,26 +153,22 @@ class RQVAETokenizer(AbstractTokenizer):
                 break
             
         writer.close()
-        return item2sem_ids
-    
-    def collision_mitigation(self):
-        pass
+        return item2sid
     
     def emb_to_sid(self, sent_embd: Tensor, device: str) -> dict:
         sem_ids_path = os.path.join(self.output_path, f'sentence-t5-base_{self.index_factory}.sem_ids')
 
         if not os.path.exists(sem_ids_path):
-            item2sem_ids = self._generate_semantic_id(sent_embd, device)
+            item2sid = self._generate_semantic_id(sent_embd, device)
             log(f'[TOKENIZER] Saving semantic IDs to {sem_ids_path}...')
             with open(sem_ids_path, 'w') as f:
-                json.dump(item2sem_ids, f)
+                json.dump(item2sid, f)
         else:
             log(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
-            item2sem_ids = json.load(open(sem_ids_path, 'r'))
+            item2sid = json.load(open(sem_ids_path, 'r'))
 
-        # TODO: 这里需要添加一个防止SID冲突的模块：包含添加第四位和随机改变最后一位
-        item2tokens = self.collision_mitigation(item2sem_ids)
+        item2sid = self.collision_mitigation(item2sid, self.codebook_size) # Add an additional codebook to mitigate the hash collision
         
-        item2tokens = self._sid_shift(item2sem_ids)
-        return item2tokens
+        item2sid = self.sid_shift(item2sid)
+        return item2sid
     

@@ -46,23 +46,22 @@ def train(params: dict=None):
         batch_size=args.train_batch_size,
         category=args.category,
     )
-    item2tokens = tokenizer.emb_to_sid(sent_embd, device)
-    
-    metrics = None
-    return metrics
+    item2sid = tokenizer.emb_to_sid(sent_embd, device)
+    print(item2sid)
+    return item2sid
 
 
 if __name__ == '__main__':
     parse = argparse.ArgumentParser()
     # Shared parameters
-    parse.add_argument('--gpu', type=int, default=0)
+    parse.add_argument('--gpu', type=int, default=1)
     parse.add_argument('--seed', type=int, default=2024)
     parse.add_argument('--data_path', type=str, default='/home/hzzhang/public_data/amazon_data/AmazonReviews2014')
     parse.add_argument('--output_path', type=str, default='./outputs')
     parse.add_argument('--projector_path', type=str, default='/home/hzzhang/Checkpoints/sentence-t5-base')
     
     # Parameters of raw datasets
-    parse.add_argument('--category', type=str, default='Toys_and_Games') # [Toys_and_Games, CDs_and_Vinyl]
+    parse.add_argument('--category', type=str, default='CDs_and_Vinyl') # [Toys_and_Games, CDs_and_Vinyl]
     parse.add_argument('--metadata', type=str, default='sentence')
     parse.add_argument('--split_strategy', type=str, default='leave_one_out')
     
@@ -87,9 +86,9 @@ if __name__ == '__main__':
     parse.add_argument('--beta', type=float, default=0.25)
     args = parse.parse_args()
     
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     
-    # create_log_file("/home/hzzhang/nanoGR/logs", 'test.log')
+    create_log_file("/home/hzzhang/nanoGR/logs", 'test_CDs_and_Vinyl.log')
     train()
     
     # space = {

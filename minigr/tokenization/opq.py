@@ -77,12 +77,12 @@ class OPQTokenizer(AbstractTokenizer):
             faiss_sem_ids.append(code)
         pq_codes = np.array(faiss_sem_ids)
 
-        item2sem_ids = {}
+        item2sid = {}
         for i in range(pq_codes.shape[0]):
             item = self.id2item[i + 1]
-            item2sem_ids[item] = tuple(pq_codes[i].tolist())
+            item2sid[item] = tuple(pq_codes[i].tolist())
         
-        return item2sem_ids
+        return item2sid
     
     def emb_to_sid(self, sent_embd, training_item_mask) -> dict:
         """
@@ -97,13 +97,13 @@ class OPQTokenizer(AbstractTokenizer):
         sem_ids_path = os.path.join(self.output_path, f'sentence-t5-base_{self.index_factory}.sem_ids')
 
         if not os.path.exists(sem_ids_path):
-            item2sem_ids = self._generate_semantic_id(sent_embd, sem_ids_path, training_item_mask)
+            item2sid = self._generate_semantic_id(sent_embd, sem_ids_path, training_item_mask)
             log(f'[TOKENIZER] Saving semantic IDs to {sem_ids_path}...')
             with open(sem_ids_path, 'w') as f:
-                json.dump(item2sem_ids, f)
+                json.dump(item2sid, f)
         else:
             log(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
-            item2sem_ids = json.load(open(sem_ids_path, 'r'))
+            item2sid = json.load(open(sem_ids_path, 'r'))
 
-        item2tokens = self._sid_shift(item2sem_ids)
+        item2tokens = self._sid_shift(item2sid)
         return item2tokens

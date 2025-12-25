@@ -1,4 +1,6 @@
 import math
+from copy import deepcopy
+from collections import defaultdict
 
 
 class AbstractTokenizer:
@@ -17,28 +19,40 @@ class AbstractTokenizer:
         assert x.is_integer() and x >= 0, "Invalid value for n_codebook"
         return int(x)
 
-    def _generate_semantic_id(self):
-        raise NotImplementedError('Tokenization not implemented')
-
     def embd_to_sid(self):
         raise NotImplementedError('')
     
-    def _sid_shift(self, item2sem_ids: dict) -> dict:
+    def collision_mitigation(self, item2sid: dict, codebook_size: int) -> dict:
+        new_item2sid = deepcopy(item2sid)
+        
+        sid_counts = defaultdict(int)
+        for key, value in new_item2sid.items():
+            tmp = '_'.join(map(str, value))
+            new_item2sid[key] = value + [sid_counts[tmp]]
+            sid_counts[tmp] += 1
+            
+        max_collision = max(sid_counts.values())
+        if max_collision > codebook_size:
+            raise ValueError(f'The maximum number of conflicting SIDs ({max_collision}) is greater that the pre-defined codebook size ({codebook_size}).')
+        return new_item2sid
+        
+    
+    def sid_shift(self, item2sid: dict) -> dict:
         """
         Shift Semantic ID that the tokens can be differentiated between the different codebooks.
 
         Args:
-            item2sem_ids (dict): A dictionary mapping items to their corresponding semantic IDs.
+            item2sid (dict): A dictionary mapping items to their corresponding semantic IDs.
 
         Returns:
             dict: A dictionary mapping items to their corresponding tokens.
         """
-        for item in item2sem_ids:
-            tokens = list(item2sem_ids[item])
+        for item in item2sid:
+            tokens = list(item2sid[item])
             for digit in range(self.num_codebooks):    # "+ 1" as 0 is reserved for padding
                 tokens[digit] += self.codebook_size * digit + 1
-            item2sem_ids[item] = list(map(lambda t: f'<t_{t}>', tokens))
-        return item2sem_ids
+            item2sid[item] = list(map(lambda t: f'<t_{t}>', tokens))
+        return item2sid
     
     def _textualize_function(self, example: dict, item2tokens: dict):
         item_seq = example['item_seq'][0]
