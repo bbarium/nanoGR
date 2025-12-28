@@ -47,7 +47,6 @@ def train(params: dict=None):
         category=args.category,
     )
     item2sid = tokenizer.emb_to_sid(sent_embd, device)
-    print(item2sid)
     return item2sid
 
 

@@ -1,20 +1,46 @@
 import os
+os.environ['WANDB_API_KEY'] = 'ca085b294e483aca15130489d6fa1ed888b3a461'
+import json
 import argparse
-import torch
+from copy import deepcopy
+from collections import defaultdict
 
+import torch
 from transformers import (
     Trainer,
     TrainingArguments,
+    AutoConfig,
     AutoTokenizer,
     AutoModelForCausalLM,
     EarlyStoppingCallback
 )
 
 from minigr.dataset import AmazonReviews2014
+from minigr.dataloader import textualize
+from minigr.evaluator import calculate_metrics
+from minigr.utils import seed_everything, log
 
-from minigr.evaluator import Evaluator
-from minigr.encoder import encode_sent_to_emb
-from minigr.utils import seed_everything
+
+def collision_mitigation(item2sid: dict, codebook_size: int) -> dict:
+        new_item2sid = deepcopy(item2sid)
+        
+        sid_counts = defaultdict(int)
+        for key, value in new_item2sid.items():
+            tmp = '_'.join(map(str, value))
+            new_item2sid[key] = value + [sid_counts[tmp]]
+            sid_counts[tmp] += 1
+            
+        max_collision = max(sid_counts.values())
+        if max_collision > codebook_size:
+            raise ValueError(f'The maximum number of conflicting SIDs ({max_collision}) is greater that the pre-defined codebook size ({codebook_size}).')
+        
+        num_codebooks = len(next(iter(new_item2sid.values()))) # '+1' the additional codebook for alleviating hash collision
+        for item in new_item2sid.keys():
+            tokens = list(new_item2sid[item])
+            for digit in range(num_codebooks):
+                tokens[digit] += codebook_size * digit + 1 # 0 is reserved for padding
+            new_item2sid[item] = list(map(lambda t: f'<t_{t}>', tokens))
+        return new_item2sid
 
 
 class Collator(object):
@@ -52,43 +78,45 @@ class Collator(object):
 def gr_pipeline():
     seed_everything(args.seed)
     
+    # TODO: 添加多模态数据集
     # Load Raw Dataset
-    # TODO: 添加多模态的数据
     raw_dataset = AmazonReviews2014(args.data_path, args.category, args.metadata)
     split_datasets = raw_dataset.split(args.split_strategy)
     
-    # Dataset Pre-processing
-    # TODO: 需要添加预处理模块用于处理原始文本或者多模态数据
-    
-    # Text2Emb
-    sent_emb = encode_sent_to_emb(raw_dataset, args.projector_path, args.proj_batch_size, device)
-
-    # Emb2SID
-    training_item_mask = raw_dataset.training_item_mask()
-    
-    if os.path.exists('./tokenized_datasets.pt'):
-        tokenized_datasets = torch.load('./tokenized_datasets.pt')
-        item2tokens = tokenized_datasets.item2tokens()
-    
-    # Instantiate LLM-driven Model
+    log(f'[TOKENIZER] Loading semantic IDs from {args.sem_ids_path}...')
+    item2sid = json.load(open(args.sem_ids_path, 'r'))
+    item2sid = collision_mitigation(item2sid, 256)
+       
+    # Instantiate a tokenization and add new SIDs
+    log(f'[TOKENIZER] Add new SIDs to the Tokenization...')
+    tokenizer = AutoTokenizer.from_pretrained(args.gr_path)
     new_tokens = []
-    for sid in item2tokens.values():
+    for sid in item2sid.values():
         new_tokens += sid
     new_tokens = set(new_tokens)
-    tokenizer = AutoTokenizer.from_pretrained(args.gr_path)
-    num_new_tokens = tokenizer.add_tokens(list(new_tokens))
+    tokenizer.add_tokens(list(new_tokens))
     new_vocab_size = len(tokenizer)
-
     tokenizer.model_max_length = args.model_max_length
+    log(f'[TOKENIZER] New Vocabulary Size: {new_vocab_size}')
     
-    model = AutoModelForCausalLM.from_pretrained(args.gr_path, device_map='auto')
+    # Instantiate an LLM
+    # model = TIGER(args.model_path, item_id2tokens, args.d_model)
+    if args.train_from_scratch:
+        config = AutoConfig.from_pretrained(args.gr_path)
+        model = AutoModelForCausalLM.from_config(config)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(args.gr_path, device_map='auto')
     model.resize_token_embeddings(new_vocab_size)
     
-    # model = TIGER(args.model_path, item_id2tokens, args.d_model)
+    # Create train/val splits
+    if not os.path.exists(args.tmp_path):
+        tokenized_datasets = textualize(split_datasets, item2sid)
+        torch.save(tokenized_datasets, './tokenized_datasets.pt')
+    else:
+        tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
     
     # Train and Eval Steps
-    # metrics = Trainer(args, model, tokenizer).fit(dataloaders)
-    evaluator = Evaluator()
+    # evaluator = Evaluator()
     collator = Collator(tokenizer)
     trainer = Trainer(
         model=model,
@@ -106,6 +134,7 @@ def gr_pipeline():
             lr_scheduler_type=args.lr_scheduler_type,
             logging_steps=args.logging_step,
             optim=args.optim,
+            # batch_eval_metrics=True,
             eval_strategy=args.save_and_eval_strategy,
             save_strategy=args.save_and_eval_strategy,
             eval_steps=args.save_and_eval_step,
@@ -114,8 +143,8 @@ def gr_pipeline():
             save_total_limit=2,
             load_best_model_at_end=True,
             eval_delay= 1,
-            compute_metrics=evaluator.calculate_metrics
         ),
+        # compute_metrics=calculate_metrics,
         tokenizer=tokenizer,
         data_collator=collator,
         callbacks = [EarlyStoppingCallback(early_stopping_patience=40)]
@@ -130,7 +159,7 @@ if __name__ == '__main__':
     # Shared parameters
     parse.add_argument('--gpu', type=int, default=0)
     parse.add_argument('--seed', type=int, default=42)
-    parse.add_argument('--per_device_batch_size', type=int, default=72)
+    parse.add_argument('--per_device_batch_size', type=int, default=200)
     parse.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parse.add_argument('--warmup_ratio', type=float, default=0.01)
     parse.add_argument('--epochs', type=int, default=200)
@@ -139,43 +168,23 @@ if __name__ == '__main__':
     parse.add_argument('--lr_scheduler_type', type=str, default='cosine')
     parse.add_argument('--optim', type=str, default='adamw_torch')
     parse.add_argument('--save_and_eval_strategy', type=str, default='epoch')
-    parse.add_argument('--save_and_eval_step', type=int, default=1000)
-    parse.add_argument('--logging_step', type=int, default=10)
+    parse.add_argument('--save_and_eval_step', type=int, default=50)
+    parse.add_argument('--logging_step', type=int, default=20)
     
     # Parameters of local file paths
-    parse.add_argument('--data_path', type=str, default='/home/hzzhang/private_data/AmazonReviews2014')
-    parse.add_argument('--output_path', type=str, default='./outputs')
-    parse.add_argument('--projector_path', type=str, default='/home/hzzhang/Checkpoints/sentence-t5-base')
+    parse.add_argument('--data_path', type=str, default='/home/hzzhang/public_data/amazon_data/AmazonReviews2014')
+    parse.add_argument('--sem_ids_path', type=str, default='/home/hzzhang/nanoGR/outputs/sentence-t5-base_Toys_and_Games_RQVAE3x256.dim32.sem_ids')
     parse.add_argument('--gr_path', type=str, default='/home/hzzhang/Checkpoints/Qwen3-0.6B')
+    parse.add_argument('--output_path', type=str, default='./outputs')
+    parse.add_argument('--tmp_path', type=str, default='./tokenized_datasets.pt')
     
     # Parameters of raw datasets
     parse.add_argument('--category', type=str, default='Toys_and_Games') # [Toys_and_Games, CDs_and_Vinyl]
     parse.add_argument('--metadata', type=str, default='sentence')
     parse.add_argument('--split_strategy', type=str, default='leave_one_out')
     
-    # Parameters of the projector
-    parse.add_argument('--lr', type=float, default=0.0001)
-    parse.add_argument('--wd', type=float, default=0.0)
-    # parse.add_argument('--epochs', type=float, default=5000)
-    parse.add_argument('--eval_step', type=float, default=100)
-    parse.add_argument('--num_warmup_steps', type=int, default=1000)
-    parse.add_argument('--train_batch_size', type=float, default=4096)
-    parse.add_argument('--eval_batch_size', type=float, default=4096)
-    parse.add_argument('--proj_batch_size', type=int, default=512)
-    
-    # Parameters of the tokenizer
-    parse.add_argument('--num_codebooks', type=int, default=3)
-    parse.add_argument('--codebook_size', type=int, default=256)
-    parse.add_argument('--max_item_seq_len', type=int, default=50)
-    parse.add_argument('--hid_channels', type=int, default=64)
-    parse.add_argument('--mlp_channels', type=int, nargs='+', default=[768, 256, 128, 64])
-    parse.add_argument('--dropout', type=float, default=0.0)
-    parse.add_argument('--quant_loss_weight', type=float, default=1.0)
-    parse.add_argument('--kmeans_init', type=bool, default=False)
-    parse.add_argument('--kmeans_iters', type=int, default=100)
-    parse.add_argument('--beta', type=float, default=0.25)
-    
     # Parameters of the LLM
+    parse.add_argument('--train_from_scratch', type=bool, default=False)
     parse.add_argument('--d_model', type=int, default=512)
     parse.add_argument('--num_layers', type=int, default=6)
     parse.add_argument('--num_heads', type=int, default=8)

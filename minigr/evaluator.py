@@ -1,4 +1,9 @@
+import numpy as np
+from sklearn.metrics import ndcg_score
+from typing import Tuple
+
 import torch
+from torch.types import Tensor
 
 
 class Evaluator:
@@ -42,15 +47,41 @@ class Evaluator:
         dcg = torch.where(pos_index, dcg, 0)
         return dcg[:, :k].sum(dim=1).cpu().float()
 
-    def calculate_metrics(self, preds, labels):
-        if isinstance(preds, tuple):
-            preds, n_visited_items = preds
-        else:
-            n_visited_items = torch.FloatTensor([len(self.tokenizer.item2tokens)] * preds.shape[0])
-        results = {}
-        pos_index = self.calculate_pos_index(preds, labels)
-        for metric in self.config['metrics']:
-            for k in self.config['topk']:
-                results[f"{metric}@{k}"] = self.metric2func[metric](pos_index, k)
-        results['n_visited_items'] = n_visited_items
-        return results
+def calculate_metrics(eval_preds: Tuple[Tensor, Tensor], compute_result: bool):
+    preds, labels = eval_preds
+    preds, labels = preds.cpu().numpy(), labels.cpu().numpy()
+    
+    preds = preds.argsort(axis=-1)  # Sort predictions to get top-k recommendations
+    labels = labels.astype(np.int32)  # Convert labels to int32
+
+    # Calculate Hit@k
+    def hit_at_k(preds, labels, k):
+        # Check if any of the top-k predictions are in the true labels
+        return np.mean([np.isin(label, pred[:k]) for label, pred in zip(labels, preds)])
+
+    # Calculate NDCG@k
+    def ndcg_at_k(preds, labels, k):
+        # For each label and pred, compute the NDCG score at k
+        ndcg_scores = []
+        for label, pred in zip(labels, preds):
+            relevance = np.isin(label, pred[:k]).astype(int)
+            ndcg_scores.append(ndcg_score([relevance], [np.arange(k)]))  # Assume relevance is binary
+        return np.mean(ndcg_scores)
+
+    # Calculate metrics for different values of k
+    hits_at_5 = hit_at_k(preds, labels, 5)
+    hits_at_10 = hit_at_k(preds, labels, 10)
+    hits_at_15 = hit_at_k(preds, labels, 15)
+
+    ndcg_at_5 = ndcg_at_k(preds, labels, 5)
+    ndcg_at_10 = ndcg_at_k(preds, labels, 10)
+    ndcg_at_15 = ndcg_at_k(preds, labels, 15)
+
+    return {
+        'hit@5': hits_at_5,
+        'hit@10': hits_at_10,
+        'hit@15': hits_at_15,
+        'ndcg@5': ndcg_at_5,
+        'ndcg@10': ndcg_at_10,
+        'ndcg@15': ndcg_at_15
+    }

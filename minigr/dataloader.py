@@ -69,7 +69,6 @@ def tokenize_function(
     example: dict, 
     split: str,
     max_item_seq_len: int,
-    
 ) -> dict:
     """
     Tokenizes the input example based on the specified split.
@@ -144,6 +143,32 @@ def tokenize(datasets: dict) -> dict:
         tokenized_datasets[split].set_format(type='torch')
 
     return tokenized_datasets
+
+
+def textualize_function(example: dict, item2sid: dict):
+        item_seq = example['item_seq'][0]
+        input_ids = ''
+        for item in item_seq[:-1]:
+            input_ids += ''.join(item2sid[item])
+        label_ids = ''.join(item2sid[item_seq[-1]])
+        return {'input_ids': [input_ids], 'label_ids': [label_ids]}
+
+
+def textualize(datasets: dict, item2sid: dict) -> dict:
+    textualized_datasets = {}
+    
+    for split in datasets:
+        textualized_datasets[split] = datasets[split].map(
+            lambda t: textualize_function(t, item2sid),
+            batched=True,
+            batch_size=1,
+            remove_columns=datasets[split].column_names,
+            desc=f'Tokenizing {split} set: '
+        )
+
+    for split in datasets:
+        textualized_datasets[split].set_format(type='torch')
+    return textualized_datasets
 
 
 # Create Train, Val and Test Dataloaders
