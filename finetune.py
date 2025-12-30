@@ -17,7 +17,6 @@ from transformers import (
 
 from minigr.dataset import AmazonReviews2014
 from minigr.dataloader import textualize
-from minigr.evaluator import calculate_metrics
 from minigr.utils import seed_everything, log
 
 
@@ -34,12 +33,12 @@ def collision_mitigation(item2sid: dict, codebook_size: int) -> dict:
         if max_collision > codebook_size:
             raise ValueError(f'The maximum number of conflicting SIDs ({max_collision}) is greater that the pre-defined codebook size ({codebook_size}).')
         
-        num_codebooks = len(next(iter(new_item2sid.values()))) # '+1' the additional codebook for alleviating hash collision
+        num_codebooks = len(next(iter(new_item2sid.values())))
         for item in new_item2sid.keys():
             tokens = list(new_item2sid[item])
             for digit in range(num_codebooks):
-                tokens[digit] += codebook_size * digit + 1 # 0 is reserved for padding
-            new_item2sid[item] = list(map(lambda t: f'<t_{t}>', tokens))
+                tokens[digit] += codebook_size * digit + 1
+            new_item2sid[item] = list(map(lambda t: f'<{chr(97+digit)}_{t}>', tokens))
         return new_item2sid
 
 
@@ -83,6 +82,11 @@ def gr_pipeline():
     raw_dataset = AmazonReviews2014(args.data_path, args.category, args.metadata)
     split_datasets = raw_dataset.split(args.split_strategy)
     
+    max_length = 0
+    for item_seq in split_datasets['train']['item_seq']:
+        max_length = max(len(item_seq), max_length)
+    log(f'[Dataset] Max Length of item sequences: {max_length}')
+    
     log(f'[TOKENIZER] Loading semantic IDs from {args.sem_ids_path}...')
     item2sid = json.load(open(args.sem_ids_path, 'r'))
     item2sid = collision_mitigation(item2sid, 256)
@@ -97,10 +101,10 @@ def gr_pipeline():
     tokenizer.add_tokens(list(new_tokens))
     new_vocab_size = len(tokenizer)
     tokenizer.model_max_length = args.model_max_length
+    # tokenizer.model_max_length = args.model_max_length + max_length*
     log(f'[TOKENIZER] New Vocabulary Size: {new_vocab_size}')
     
     # Instantiate an LLM
-    # model = TIGER(args.model_path, item_id2tokens, args.d_model)
     if args.train_from_scratch:
         config = AutoConfig.from_pretrained(args.gr_path)
         model = AutoModelForCausalLM.from_config(config)
@@ -116,7 +120,6 @@ def gr_pipeline():
         tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
     
     # Train and Eval Steps
-    # evaluator = Evaluator()
     collator = Collator(tokenizer)
     trainer = Trainer(
         model=model,
@@ -159,7 +162,7 @@ if __name__ == '__main__':
     # Shared parameters
     parse.add_argument('--gpu', type=int, default=0)
     parse.add_argument('--seed', type=int, default=42)
-    parse.add_argument('--per_device_batch_size', type=int, default=200)
+    parse.add_argument('--per_device_batch_size', type=int, default=128)
     parse.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parse.add_argument('--warmup_ratio', type=float, default=0.01)
     parse.add_argument('--epochs', type=int, default=200)
@@ -189,7 +192,7 @@ if __name__ == '__main__':
     parse.add_argument('--num_layers', type=int, default=6)
     parse.add_argument('--num_heads', type=int, default=8)
     parse.add_argument('--temperature', type=float, default=0.6)
-    parse.add_argument('--model_max_length', type=int, default=25)
+    parse.add_argument('--model_max_length', type=int, default=256)
     args = parse.parse_args()
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

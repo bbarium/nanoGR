@@ -1,6 +1,7 @@
 from typing import Tuple
 
 from torch.utils.data import DataLoader
+from minigr.utils import log
 
 
 def tokenize_first_n_items(
@@ -151,6 +152,7 @@ def textualize_function(example: dict, item2sid: dict):
         for item in item_seq[:-1]:
             input_ids += ''.join(item2sid[item])
         label_ids = ''.join(item2sid[item_seq[-1]])
+        
         return {'input_ids': [input_ids], 'label_ids': [label_ids]}
 
 
