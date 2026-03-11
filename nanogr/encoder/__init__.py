@@ -6,8 +6,8 @@ from torch import device
 
 from sentence_transformers import SentenceTransformer
 
-from minigr.dataset import AmazonReviewsDataset
-from minigr.utils import log
+from nanogr.dataset import AmazonReviewsDataset
+from nanogr.utils import log
 
 
 def encode_sent_to_emb(

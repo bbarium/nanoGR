@@ -8,8 +8,8 @@ from torch.utils.data import DataLoader
 import transformers
 from transformers import AutoTokenizer
 
-from minigr.utils import Config
-from minigr.scheduler import get_constant_schedule_with_warmup
+from nanogr.utils import Config
+from nanogr.scheduler import get_constant_schedule_with_warmup
 
 
 class Trainer:
@@ -54,7 +54,12 @@ class Trainer:
             tokenized_input['labels'] = tokenized_label['input_ids']
             tokenized_input['labels'][tokenized_input['labels'] == self.tokenizer.pad_token_id] = -100
             embd = self.model(tokenized_input)
+
+            # TODO: MTP模块
             
+            
+            # TODO: 对生成的嵌入引入协同或者其他信息，进行对齐
+
             self.optimizer.zero_grad()
     
     def _align_special_tokens():

@@ -1,7 +1,7 @@
 from typing import Tuple
 
 from torch.utils.data import DataLoader
-from minigr.utils import log
+from nanogr.utils import log
 
 
 def tokenize_first_n_items(

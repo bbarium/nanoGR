@@ -8,9 +8,9 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import get_constant_schedule_with_warmup
 
-from minigr.tokenization import AbstractTokenizer
-from minigr.gr_models import RQVAE
-from minigr.utils import log
+from nanogr.tokenization import AbstractTokenizer
+from nanogr.gr_models import RQVAE
+from nanogr.utils import log
 
 
 class RQVAETokenizer(AbstractTokenizer):
@@ -120,14 +120,15 @@ class RQVAETokenizer(AbstractTokenizer):
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.wd)
         self.scheduler = get_constant_schedule_with_warmup(self.optimizer, self.num_warmup_steps*len(train_loader))
         
-        best_loss, PATIENCE = float('inf'), 0
+        best_loss, best_collision, PATIENCE = float('inf'), float('inf'), 0
         for epoch in range(1, self.epochs + 1):
             start_time = time.time()
             train_loss, loss_recon, loss_quant = self.train_epoch(train_loader)
 
             indices, collision_rate, utilization, val_loss = self.eval_epoch(train_embd, val_embd)
-            if train_loss < best_loss:
+            if train_loss < best_loss or collision_rate < best_collision:
                 best_loss = train_loss
+                best_collision = collision_rate
                 PATIENCE = 0
                 
                 item2sid = {}
@@ -152,22 +153,24 @@ class RQVAETokenizer(AbstractTokenizer):
                 break
             
         writer.close()
-        return item2sid
+        return item2sid, [self.model.rq.vq_convs[i].centroids.weight.detach().cpu() for i in range(len(self.model.rq.vq_convs))]
     
     def emb_to_sid(self, sent_embd: Tensor, device: str) -> dict:
         sem_ids_path = os.path.join(self.output_path, f'sentence-t5-base_{self.index_factory}.sem_ids')
 
         if not os.path.exists(sem_ids_path):
-            item2sid = self._generate_semantic_id(sent_embd, device)
+            item2sid, codebooks = self._generate_semantic_id(sent_embd, device)
             log(f'[TOKENIZER] Saving semantic IDs to {sem_ids_path}...')
             with open(sem_ids_path, 'w') as f:
                 json.dump(item2sid, f)
+            torch.save(codebooks, './outputs/codebooks.pt')
         else:
             log(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
             item2sid = json.load(open(sem_ids_path, 'r'))
 
-        item2sid = self.collision_mitigation(item2sid, self.codebook_size) # Add an additional codebook to mitigate the hash collision
+
+        # item2sid = self.collision_mitigation(item2sid, self.codebook_size) # Add an additional codebook to mitigate the hash collision
         
-        item2sid = self.sid_shift(item2sid)
+        # item2sid = self.sid_shift(item2sid)
         return item2sid
     

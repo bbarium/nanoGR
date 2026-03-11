@@ -15,9 +15,9 @@ from transformers import (
     EarlyStoppingCallback
 )
 
-from minigr.dataset import AmazonReviews2014
-from minigr.dataloader import textualize
-from minigr.utils import seed_everything, log
+from nanogr.dataset import AmazonReviews2014
+from nanogr.dataloader import textualize
+from nanogr.utils import seed_everything, log
 
 
 def collision_mitigation(item2sid: dict, codebook_size: int) -> dict:
@@ -85,7 +85,7 @@ def gr_pipeline():
     max_length = 0
     for item_seq in split_datasets['train']['item_seq']:
         max_length = max(len(item_seq), max_length)
-    log(f'[Dataset] Max Length of item sequences: {max_length}')
+    log(f'[DATASET] Max Length of item sequences: {max_length}')
     
     log(f'[TOKENIZER] Loading semantic IDs from {args.sem_ids_path}...')
     item2sid = json.load(open(args.sem_ids_path, 'r'))
@@ -101,6 +101,9 @@ def gr_pipeline():
     tokenizer.add_tokens(list(new_tokens))
     new_vocab_size = len(tokenizer)
     tokenizer.model_max_length = args.model_max_length
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.padding_side = "left"
     # tokenizer.model_max_length = args.model_max_length + max_length*
     log(f'[TOKENIZER] New Vocabulary Size: {new_vocab_size}')
     
@@ -109,7 +112,12 @@ def gr_pipeline():
         config = AutoConfig.from_pretrained(args.gr_path)
         model = AutoModelForCausalLM.from_config(config)
     else:
-        model = AutoModelForCausalLM.from_pretrained(args.gr_path, device_map='auto')
+        model = AutoModelForCausalLM.from_pretrained(
+            args.gr_path, 
+            device_map='auto',
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2"
+        )
     model.resize_token_embeddings(new_vocab_size)
     
     # Create train/val splits
@@ -146,6 +154,7 @@ def gr_pipeline():
             save_total_limit=2,
             load_best_model_at_end=True,
             eval_delay= 1,
+            # report_to='none'
         ),
         # compute_metrics=calculate_metrics,
         tokenizer=tokenizer,
@@ -155,17 +164,17 @@ def gr_pipeline():
     
     trainer.train()
     return
-    
+
 
 if __name__ == '__main__':
     parse = argparse.ArgumentParser()
     # Shared parameters
     parse.add_argument('--gpu', type=int, default=0)
     parse.add_argument('--seed', type=int, default=42)
-    parse.add_argument('--per_device_batch_size', type=int, default=128)
+    parse.add_argument('--per_device_batch_size', type=int, default=64)
     parse.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parse.add_argument('--warmup_ratio', type=float, default=0.01)
-    parse.add_argument('--epochs', type=int, default=200)
+    parse.add_argument('--epochs', type=int, default=100)
     parse.add_argument('--learning_rate', type=float, default=5e-4)
     parse.add_argument('--weight_decay', type=float, default=0.01)
     parse.add_argument('--lr_scheduler_type', type=str, default='cosine')
@@ -188,11 +197,7 @@ if __name__ == '__main__':
     
     # Parameters of the LLM
     parse.add_argument('--train_from_scratch', type=bool, default=False)
-    parse.add_argument('--d_model', type=int, default=512)
-    parse.add_argument('--num_layers', type=int, default=6)
-    parse.add_argument('--num_heads', type=int, default=8)
-    parse.add_argument('--temperature', type=float, default=0.6)
-    parse.add_argument('--model_max_length', type=int, default=256)
+    parse.add_argument('--model_max_length', type=int, default=128)
     args = parse.parse_args()
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

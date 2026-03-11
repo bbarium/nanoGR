@@ -9,8 +9,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 from torch.utils.data import DataLoader
 
-from minigr.utils import log, seed_everything
-from minigr.dataset import AmazonReviews2014
+from nanogr.utils import log, seed_everything
+from nanogr.dataset import AmazonReviews2014
 from finetune import collision_mitigation
 
 

@@ -16,7 +16,7 @@ from transformers import (
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import Seq2SeqModelOutput
 
-from minigr.utils import delete_module
+from nanogr.utils import delete_module
 
 
 class T5Encoder(nn.Module):

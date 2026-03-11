@@ -5,8 +5,8 @@ import numpy as np
 
 from .tokenizer import AbstractTokenizer
 
-from minigr.dataset import AmazonReviewsDataset
-from minigr.utils import log
+from nanogr.dataset import AmazonReviewsDataset
+from nanogr.utils import log
 
 
 class OPQTokenizer(AbstractTokenizer):
@@ -16,17 +16,20 @@ class OPQTokenizer(AbstractTokenizer):
         codebook_size: int,
         max_item_seq_len: int,
         output_path: str,
-        dataset: AmazonReviewsDataset=None,
+        id2item: dict=None,
         opq_use_gpu: bool=True,
         opq_gpu_id: int=0,
         num_proc: int = 2,
         faiss_omp_num_threads: int=4,
     ):
-        super(OPQTokenizer, self).__init__(num_codebooks, codebook_size, max_item_seq_len, output_path, dataset)
+        # super(OPQTokenizer, self).__init__(num_codebooks, codebook_size, max_item_seq_len, output_path, dataset)
+        super(OPQTokenizer, self).__init__(num_codebooks, codebook_size, output_path)
         self.num_proc = num_proc
         self.opq_use_gpu = opq_use_gpu
         self.opq_gpu_id = opq_gpu_id
         self.faiss_omp_num_threads = faiss_omp_num_threads
+
+        self.id2item = id2item
 
     @property
     def index_factory(self) -> str:
@@ -60,6 +63,18 @@ class OPQTokenizer(AbstractTokenizer):
         index.add(sent_embd)
         if self.opq_use_gpu:
             index = faiss.index_gpu_to_cpu(index)
+
+        import torch
+        from faiss.contrib.inspect_tools import get_pq_centroids
+        if isinstance(index, faiss.IndexPreTransform):
+            base_index = faiss.downcast_index(index.index)
+        else:
+            base_index = faiss.downcast_index(index)
+
+        # For IVFPQ
+        pq = base_index.pq
+        codebooks = get_pq_centroids(pq)
+        torch.save(codebooks, './outputs/opq_codebooks.pt')        
 
         ivf_index = faiss.downcast_index(index.index)
         invlists = faiss.extract_index_ivf(ivf_index).invlists
@@ -105,5 +120,5 @@ class OPQTokenizer(AbstractTokenizer):
             log(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
             item2sid = json.load(open(sem_ids_path, 'r'))
 
-        item2tokens = self._sid_shift(item2sid)
-        return item2tokens
+        # item2tokens = self._sid_shift(item2sid)
+        return item2sid
