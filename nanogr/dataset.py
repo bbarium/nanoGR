@@ -4,10 +4,9 @@ import json
 import numpy as np
 import os.path as osp
 from tqdm import tqdm
-from typing import Optional
+from typing import Optional, Tuple
 from collections import defaultdict
 
-from datasets import Dataset
 from .utils import clean_text, log
 
 
@@ -96,6 +95,16 @@ class AmazonReviewsDataset:
             dict: The item-to-id mapping.
         """
         return self.id_mapping['item2id']
+    
+    def max_min_seq_len(self) -> Tuple[int, int]:
+        if len(self.all_item_seqs) == 0:
+            return (0, 0)
+        
+        max_length, min_length = 0, np.inf
+        for value in self.all_item_seqs.values():
+            max_length = max(max_length, len(value))
+            min_length = min(min_length, len(value))
+        return (max_length, min_length)
 
     def _download_and_process_raw(self):
         """
@@ -103,50 +112,6 @@ class AmazonReviewsDataset:
         It is responsible for downloading and processing the raw data.
         """
         raise NotImplementedError('This method should be implemented in the subclass')
-
-    def _leave_one_out(self):
-        """
-        Splits the dataset into train, validation, and test sets using the leave-one-out strategy.
-
-        Returns:
-            dict: A dictionary containing the train, validation, and test datasets.
-                  Each dataset is represented as a dictionary with 'user' and 'item_seq' keys.
-                  The 'user' key contains a list of users, and the 'item_seq' key contains a list of item sequences.
-        """
-        datasets = {'train': {'user': [], 'item_seq': []},
-                    'val':   {'user': [], 'item_seq': []},
-                    'test':  {'user': [], 'item_seq': []}}
-        for user in self.all_item_seqs:
-            datasets['test']['user'].append(user)
-            datasets['test']['item_seq'].append(self.all_item_seqs[user])
-            if len(self.all_item_seqs[user]) > 1:
-                datasets['val']['user'].append(user)
-                datasets['val']['item_seq'].append(self.all_item_seqs[user][:-1])
-            if len(self.all_item_seqs[user]) > 2:
-                datasets['train']['user'].append(user)
-                datasets['train']['item_seq'].append(self.all_item_seqs[user][:-2])
-        
-        for split in datasets:
-            datasets[split] = Dataset.from_dict(datasets[split])
-        return datasets
-
-    def split(self, split_strategy: str=None):
-        """
-        Split the dataset into train, validation, and test sets based on the specified split strategy.
-
-        Returns:
-            datasets (dict): A dictionary containing the train and test datasets.
-        """
-        if self.split_data is not None:
-            return self.split_data
-
-        if split_strategy in ['leave_one_out', 'last_out']:
-            datasets = self._leave_one_out()
-        else:
-            raise NotImplementedError(f'Split strategy [{split_strategy}] not implemented.')
-
-        self.split_data = datasets
-        return self.split_data
 
     def training_item_mask(self):
         if self.split_data is None:
@@ -273,6 +238,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         for user, item_time in item_seqs.items():
             item_time.sort(key=lambda x: x[1])
             item_seqs[user] = [_[0] for _ in item_time]
+            max_length = max(len(item_seqs[user]), max_length)
         return item_seqs
 
     def _remap_ids(self, item_seqs: dict) -> tuple[dict, dict]:
@@ -498,3 +464,41 @@ class AmazonReviews2014(AmazonReviewsDataset):
             input_path=meta_localpath,
             output_path=processed_data_path
         )
+    
+    def _leave_one_out(self, all_item_seqs: dict) -> dict:
+        """
+        Splits the dataset into train, validation, and test sets using the leave-one-out strategy.
+
+        Returns:
+            dict: A dictionary containing the train, validation, and test datasets.
+                  Each dataset is represented as a dictionary with 'user' and 'item_seq' keys.
+                  The 'user' key contains a list of users, and the 'item_seq' key contains a list of item sequences.
+        """
+        datasets = {'train': {'user': [], 'item_seq': []},
+                    'val':   {'user': [], 'item_seq': []},
+                    'test':  {'user': [], 'item_seq': []}}
+        for user in all_item_seqs:
+            datasets['test']['user'].append(user)
+            datasets['test']['item_seq'].append(all_item_seqs[user])
+            if len(all_item_seqs[user]) > 1:
+                datasets['val']['user'].append(user)
+                datasets['val']['item_seq'].append(all_item_seqs[user][:-1])
+            if len(all_item_seqs[user]) > 2:
+                datasets['train']['user'].append(user)
+                datasets['train']['item_seq'].append(all_item_seqs[user][:-2])
+        return datasets
+
+
+    def split(self, split_strategy: str=None) -> dict:
+        """
+        Split the dataset into train, validation, and test sets based on the specified split strategy.
+
+        Returns:
+            datasets (dict): A dictionary containing the train and test datasets.
+        """
+        if split_strategy in ['leave_one_out']:
+            datasets = self._leave_one_out(self.all_item_seqs)
+        else:
+            raise NotImplementedError(f'Split strategy [{split_strategy}] not implemented.')
+
+        return datasets

@@ -16,62 +16,75 @@ from transformers import (
 )
 
 from nanogr.dataset import AmazonReviews2014
-from nanogr.dataloader import textualize
-from nanogr.utils import seed_everything, log
+from nanogr.dataloader import tokenize
+from nanogr.utils import seed_everything, log, NEW_TOKENS
 
 
-def collision_mitigation(item2sid: dict, codebook_size: int) -> dict:
-        new_item2sid = deepcopy(item2sid)
+def collision_mitigation(item2sid: dict, codebook_size: int=256) -> dict:
+    new_item2sid = deepcopy(item2sid)
+    
+    sid_counts = defaultdict(int)
+    for key, value in new_item2sid.items():
+        tmp = '_'.join(map(str, value))
+        new_item2sid[key] = value + [sid_counts[tmp]]
+        sid_counts[tmp] += 1
         
-        sid_counts = defaultdict(int)
-        for key, value in new_item2sid.items():
-            tmp = '_'.join(map(str, value))
-            new_item2sid[key] = value + [sid_counts[tmp]]
-            sid_counts[tmp] += 1
-            
-        max_collision = max(sid_counts.values())
-        if max_collision > codebook_size:
-            raise ValueError(f'The maximum number of conflicting SIDs ({max_collision}) is greater that the pre-defined codebook size ({codebook_size}).')
-        
-        num_codebooks = len(next(iter(new_item2sid.values())))
-        for item in new_item2sid.keys():
-            tokens = list(new_item2sid[item])
-            for digit in range(num_codebooks):
-                tokens[digit] += codebook_size * digit + 1
-            new_item2sid[item] = list(map(lambda t: f'<{chr(97+digit)}_{t}>', tokens))
-        return new_item2sid
+    max_collision = max(sid_counts.values())
+    if max_collision > codebook_size:
+        raise ValueError(f'The maximum number of conflicting SIDs ({max_collision}) is greater that the pre-defined codebook size ({codebook_size}).')
+    
+    for item in new_item2sid.keys():
+        token2str = []
+        for digit in range(len(new_item2sid[item])):
+            sid = new_item2sid[item][digit]
+            sid = sid + codebook_size * digit + 1
+            token2str.append(f'<{chr(97+digit)}_{sid}>')
+        new_item2sid[item] = token2str
+    return new_item2sid
 
 
-class Collator(object):
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token_id = 0
+def extend_tokenization_(tokenizer: AutoTokenizer, item2sid: dict):
+    new_tokens = []
+    for sid in item2sid.values():
+        new_tokens += sid
+    new_tokens = set(new_tokens)
+    tokenizer.add_tokens(list(new_tokens) + NEW_TOKENS) # add all sids and new special token ('<|sid_start|>', '<|sid_end|>', '<|rec|>') into the tokenizer
+    # tokenizer.model_max_length = args.model_max_length
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.padding_side = "left"
 
-    def __call__(self, batch_data):
-        input_text = [data['input_ids'] for data in batch_data]
-        label_text = [data['label_ids'] for data in batch_data]
+
+# class Collator(object):
+#     def __init__(self, tokenizer):
+#         self.tokenizer = tokenizer
+#         if self.tokenizer.pad_token_id is None:
+#             self.tokenizer.pad_token_id = 0
+
+#     def __call__(self, batch_data):
+#         input_text = [data['input_ids'] for data in batch_data]
+#         label_text = [data['label_ids'] for data in batch_data]
         
-        tokenized_input = self.tokenizer(
-            input_text, 
-            return_tensors='pt', 
-            padding='max_length', 
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_attention_mask=True
-        )
-        tokenized_label = self.tokenizer(
-            label_text, 
-            return_tensors='pt', 
-            padding='max_length', 
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_attention_mask=True
-        )
+#         tokenized_input = self.tokenizer(
+#             input_text, 
+#             return_tensors='pt', 
+#             padding='max_length', 
+#             max_length=self.tokenizer.model_max_length,
+#             truncation=True,
+#             return_attention_mask=True
+#         )
+#         tokenized_label = self.tokenizer(
+#             label_text, 
+#             return_tensors='pt', 
+#             padding='max_length', 
+#             max_length=self.tokenizer.model_max_length,
+#             truncation=True,
+#             return_attention_mask=True
+#         )
         
-        tokenized_input['labels'] = tokenized_label['input_ids']
-        tokenized_input['labels'][tokenized_input['labels'] == self.tokenizer.pad_token_id] = -100
-        return tokenized_input
+#         tokenized_input['labels'] = tokenized_label['input_ids']
+#         tokenized_input['labels'][tokenized_input['labels'] == self.tokenizer.pad_token_id] = -100
+#         return tokenized_input
 
 
 def gr_pipeline():
@@ -81,89 +94,79 @@ def gr_pipeline():
     # Load Raw Dataset
     raw_dataset = AmazonReviews2014(args.data_path, args.category, args.metadata)
     split_datasets = raw_dataset.split(args.split_strategy)
-    
-    max_length = 0
-    for item_seq in split_datasets['train']['item_seq']:
-        max_length = max(len(item_seq), max_length)
-    log(f'[DATASET] Max Length of item sequences: {max_length}')
+    max_len, min_len = raw_dataset.max_min_seq_len()
+    log(f'[DATASET] Maximum/Minimum lengths of item sequences: {max_len}, {min_len}')
     
     log(f'[TOKENIZER] Loading semantic IDs from {args.sem_ids_path}...')
     item2sid = json.load(open(args.sem_ids_path, 'r'))
-    item2sid = collision_mitigation(item2sid, 256)
+    item2sid = collision_mitigation(item2sid)
        
     # Instantiate a tokenization and add new SIDs
     log(f'[TOKENIZER] Add new SIDs to the Tokenization...')
     tokenizer = AutoTokenizer.from_pretrained(args.gr_path)
-    new_tokens = []
-    for sid in item2sid.values():
-        new_tokens += sid
-    new_tokens = set(new_tokens)
-    tokenizer.add_tokens(list(new_tokens))
+    old_vocab_size = len(tokenizer)
+    extend_tokenization_(tokenizer, item2sid)
     new_vocab_size = len(tokenizer)
-    tokenizer.model_max_length = args.model_max_length
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-    tokenizer.padding_side = "left"
-    # tokenizer.model_max_length = args.model_max_length + max_length*
-    log(f'[TOKENIZER] New Vocabulary Size: {new_vocab_size}')
+    log(f'[TOKENIZER] New vocabulary size: {new_vocab_size}, the number of new tokens: {new_vocab_size-old_vocab_size}')
     
-    # Instantiate an LLM
-    if args.train_from_scratch:
-        config = AutoConfig.from_pretrained(args.gr_path)
-        model = AutoModelForCausalLM.from_config(config)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            args.gr_path, 
-            device_map='auto',
-            torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2"
-        )
-    model.resize_token_embeddings(new_vocab_size)
+    # # Instantiate an LLM
+    # if args.train_from_scratch:
+    #     config = AutoConfig.from_pretrained(args.gr_path)
+    #     model = AutoModelForCausalLM.from_config(config)
+    # else:
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         args.gr_path, 
+    #         device_map='auto',
+    #         torch_dtype=torch.bfloat16,
+    #         attn_implementation="flash_attention_2"
+    #     )
+    # model.resize_token_embeddings(new_vocab_size)
     
-    # Create train/val splits
-    if not os.path.exists(args.tmp_path):
-        tokenized_datasets = textualize(split_datasets, item2sid)
-        torch.save(tokenized_datasets, './tokenized_datasets.pt')
-    else:
-        tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
+    # # Create train/val splits
+    # if not os.path.exists(args.tmp_path):
+    #     max_lens = min(args.max_seq_length, raw_dataset.max_seq_length)
+    #     tokenized_datasets = tokenize(split_datasets, item2sid, tokenizer, max_lens)
+    #     torch.save(tokenized_datasets, './tokenized_datasets.pt')
+    # else:
+    #     tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
     
-    # Train and Eval Steps
-    collator = Collator(tokenizer)
-    trainer = Trainer(
-        model=model,
-        train_dataset=tokenized_datasets['train'],
-        eval_dataset=tokenized_datasets['val'],
-        args=TrainingArguments(
-            seed=args.seed,
-            per_device_train_batch_size=args.per_device_batch_size,
-            per_device_eval_batch_size=args.per_device_batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            warmup_ratio=args.warmup_ratio,
-            num_train_epochs=args.epochs,
-            learning_rate=args.learning_rate,
-            weight_decay=args.weight_decay,
-            lr_scheduler_type=args.lr_scheduler_type,
-            logging_steps=args.logging_step,
-            optim=args.optim,
-            # batch_eval_metrics=True,
-            eval_strategy=args.save_and_eval_strategy,
-            save_strategy=args.save_and_eval_strategy,
-            eval_steps=args.save_and_eval_step,
-            save_steps=args.save_and_eval_step,
-            output_dir=args.output_path,
-            save_total_limit=2,
-            load_best_model_at_end=True,
-            eval_delay= 1,
-            # report_to='none'
-        ),
-        # compute_metrics=calculate_metrics,
-        tokenizer=tokenizer,
-        data_collator=collator,
-        callbacks = [EarlyStoppingCallback(early_stopping_patience=40)]
-    )
+    # # Train and Eval Steps
+    # # collator = Collator(tokenizer)
+    # trainer = Trainer(
+    #     model=model,
+    #     train_dataset=tokenized_datasets['train'],
+    #     eval_dataset=tokenized_datasets['val'],
+    #     args=TrainingArguments(
+    #         seed=args.seed,
+    #         per_device_train_batch_size=args.per_device_batch_size,
+    #         per_device_eval_batch_size=args.per_device_batch_size,
+    #         gradient_accumulation_steps=args.gradient_accumulation_steps,
+    #         warmup_ratio=args.warmup_ratio,
+    #         num_train_epochs=args.epochs,
+    #         learning_rate=args.learning_rate,
+    #         weight_decay=args.weight_decay,
+    #         lr_scheduler_type=args.lr_scheduler_type,
+    #         logging_steps=args.logging_step,
+    #         optim=args.optim,
+    #         # batch_eval_metrics=True,
+    #         eval_strategy=args.save_and_eval_strategy,
+    #         save_strategy=args.save_and_eval_strategy,
+    #         eval_steps=args.save_and_eval_step,
+    #         save_steps=args.save_and_eval_step,
+    #         output_dir=args.output_path,
+    #         save_total_limit=2,
+    #         load_best_model_at_end=True,
+    #         eval_delay= 1,
+    #         # report_to='none'
+    #     ),
+    #     # compute_metrics=calculate_metrics,
+    #     tokenizer=tokenizer,
+    #     # data_collator=collator,
+    #     callbacks = [EarlyStoppingCallback(early_stopping_patience=40)]
+    # )
     
-    trainer.train()
-    return
+    # trainer.train()
+    # return
 
 
 if __name__ == '__main__':

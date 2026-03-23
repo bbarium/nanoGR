@@ -19,6 +19,9 @@ import torch.nn as nn
 from torch.types import Tensor
 
 
+NEW_TOKENS = ['<|sid_start|>', '<|sid_end|>', '<|rec|>']
+
+
 def seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
