@@ -16,7 +16,7 @@ from transformers import (
 )
 
 from nanogr.dataset import AmazonReviews2014
-from nanogr.dataloader import tokenize
+from nanogr.dataloader import tokenize, create_hf_datasets
 from nanogr.utils import seed_everything, log, NEW_TOKENS
 
 
@@ -109,64 +109,65 @@ def gr_pipeline():
     new_vocab_size = len(tokenizer)
     log(f'[TOKENIZER] New vocabulary size: {new_vocab_size}, the number of new tokens: {new_vocab_size-old_vocab_size}')
     
-    # # Instantiate an LLM
-    # if args.train_from_scratch:
-    #     config = AutoConfig.from_pretrained(args.gr_path)
-    #     model = AutoModelForCausalLM.from_config(config)
-    # else:
-    #     model = AutoModelForCausalLM.from_pretrained(
-    #         args.gr_path, 
-    #         device_map='auto',
-    #         torch_dtype=torch.bfloat16,
-    #         attn_implementation="flash_attention_2"
-    #     )
-    # model.resize_token_embeddings(new_vocab_size)
+    # Instantiate an LLM
+    if args.train_from_scratch:
+        config = AutoConfig.from_pretrained(args.gr_path)
+        model = AutoModelForCausalLM.from_config(config)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.gr_path, 
+            device_map='auto',
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2"
+        )
+    model.resize_token_embeddings(new_vocab_size)
     
-    # # Create train/val splits
-    # if not os.path.exists(args.tmp_path):
-    #     max_lens = min(args.max_seq_length, raw_dataset.max_seq_length)
-    #     tokenized_datasets = tokenize(split_datasets, item2sid, tokenizer, max_lens)
-    #     torch.save(tokenized_datasets, './tokenized_datasets.pt')
-    # else:
-    #     tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
+    # Create train/val splits
+    if not os.path.exists(args.tmp_path):
+        # max_lens = min(args.max_seq_length, raw_dataset.max_seq_length)
+        tokenized_datasets = tokenize(split_datasets, item2sid, tokenizer, args.max_seq_length)
+        torch.save(tokenized_datasets, './tokenized_datasets.pt')
+    else:
+        tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
+    hf_datasets = create_hf_datasets(tokenized_datasets)
+
+    # Train and Eval Steps
+    # collator = Collator(tokenizer)
+    trainer = Trainer(
+        model=model,
+        train_dataset=hf_datasets['train'],
+        eval_dataset=hf_datasets['val'],
+        args=TrainingArguments(
+            seed=args.seed,
+            per_device_train_batch_size=args.per_device_batch_size,
+            per_device_eval_batch_size=args.per_device_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            warmup_ratio=args.warmup_ratio,
+            num_train_epochs=args.epochs,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            lr_scheduler_type=args.lr_scheduler_type,
+            logging_steps=args.logging_step,
+            optim=args.optim,
+            # batch_eval_metrics=True,
+            eval_strategy=args.save_and_eval_strategy,
+            save_strategy=args.save_and_eval_strategy,
+            eval_steps=args.save_and_eval_step,
+            save_steps=args.save_and_eval_step,
+            output_dir=args.output_path,
+            save_total_limit=2,
+            load_best_model_at_end=True,
+            eval_delay= 1,
+            # report_to='none'
+        ),
+        # compute_metrics=calculate_metrics,
+        tokenizer=tokenizer,
+        # data_collator=collator,
+        callbacks = [EarlyStoppingCallback(early_stopping_patience=40)]
+    )
     
-    # # Train and Eval Steps
-    # # collator = Collator(tokenizer)
-    # trainer = Trainer(
-    #     model=model,
-    #     train_dataset=tokenized_datasets['train'],
-    #     eval_dataset=tokenized_datasets['val'],
-    #     args=TrainingArguments(
-    #         seed=args.seed,
-    #         per_device_train_batch_size=args.per_device_batch_size,
-    #         per_device_eval_batch_size=args.per_device_batch_size,
-    #         gradient_accumulation_steps=args.gradient_accumulation_steps,
-    #         warmup_ratio=args.warmup_ratio,
-    #         num_train_epochs=args.epochs,
-    #         learning_rate=args.learning_rate,
-    #         weight_decay=args.weight_decay,
-    #         lr_scheduler_type=args.lr_scheduler_type,
-    #         logging_steps=args.logging_step,
-    #         optim=args.optim,
-    #         # batch_eval_metrics=True,
-    #         eval_strategy=args.save_and_eval_strategy,
-    #         save_strategy=args.save_and_eval_strategy,
-    #         eval_steps=args.save_and_eval_step,
-    #         save_steps=args.save_and_eval_step,
-    #         output_dir=args.output_path,
-    #         save_total_limit=2,
-    #         load_best_model_at_end=True,
-    #         eval_delay= 1,
-    #         # report_to='none'
-    #     ),
-    #     # compute_metrics=calculate_metrics,
-    #     tokenizer=tokenizer,
-    #     # data_collator=collator,
-    #     callbacks = [EarlyStoppingCallback(early_stopping_patience=40)]
-    # )
-    
-    # trainer.train()
-    # return
+    trainer.train()
+    return
 
 
 if __name__ == '__main__':
@@ -200,7 +201,7 @@ if __name__ == '__main__':
     
     # Parameters of the LLM
     parse.add_argument('--train_from_scratch', type=bool, default=False)
-    parse.add_argument('--model_max_length', type=int, default=128)
+    parse.add_argument('--max_seq_length', type=int, default=30)
     args = parse.parse_args()
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

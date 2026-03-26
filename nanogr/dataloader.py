@@ -2,7 +2,7 @@ from typing import Tuple
 
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
-from datasets import Dataset
+from datasets import Dataset, DatasetDict
 
 
 def SeqDataset():
@@ -67,44 +67,47 @@ def tokenize_function(
     num_codebooks = len(next(iter(item2sid.values())))
     item_seq = [''.join(item2sid[item]) for item in original_item_seq] # Convert item IDs into SIDs
 
-    if split == 'train':
-        n_return_examples = max(len(item_seq) - max_item_seq_len, 1)
+    # if split == 'train':
+    #     n_return_examples = max(len(item_seq) - max_item_seq_len, 1)
 
-        # Tokenize the first n items if len(item_seq) <= max_item_seq_len + 1
-        # Add 1 as the target item is not included in the input sequence
-        input_ids, attention_mask, labels, seq_lens = tokenize_first_n_items(
-            item_seq=item_seq[:min(len(item_seq), max_item_seq_len+1)],
-            tokenizer=tokenizer,
-            num_codebooks=num_codebooks,
-            max_item_seq_len=max_item_seq_len,
-        )
-        all_input_ids, all_attention_mask, all_labels, all_seq_lens = \
-            [input_ids], [attention_mask], [labels], [seq_lens]
+    #     # Tokenize the first n items if len(item_seq) <= max_item_seq_len + 1
+    #     # Add 1 as the target item is not included in the input sequence
+    #     input_ids, attention_mask, labels, seq_lens = tokenize_first_n_items(
+    #         item_seq=item_seq[:min(len(item_seq), max_item_seq_len+1)],
+    #         tokenizer=tokenizer,
+    #         num_codebooks=num_codebooks,
+    #         max_item_seq_len=max_item_seq_len,
+    #     )
+    #     all_input_ids, all_attention_mask, all_labels, all_seq_lens = \
+    #         [input_ids], [attention_mask], [labels], [seq_lens]
 
-        # Tokenize the later items if len(item_seq) > max_item_seq_len + 1
-        for i in range(1, n_return_examples):
-            cur_item_seq = item_seq[i:i+max_item_seq_len+1]
-            input_ids, attention_mask, labels, seq_lens = tokenize_later_items(cur_item_seq)
-            all_input_ids.append(input_ids)
-            all_attention_mask.append(attention_mask)
-            all_labels.append(labels)
-            all_seq_lens.append(seq_lens)
+    #     # Tokenize the later items if len(item_seq) > max_item_seq_len + 1
+    #     for i in range(1, n_return_examples):
+    #         cur_item_seq = item_seq[i:i+max_item_seq_len+1]
+    #         input_ids, attention_mask, labels, seq_lens = tokenize_later_items(cur_item_seq)
+    #         all_input_ids.append(input_ids)
+    #         all_attention_mask.append(attention_mask)
+    #         all_labels.append(labels)
+    #         all_seq_lens.append(seq_lens)
 
-        return {
-            'input_ids': all_input_ids,
-            'attention_mask': all_attention_mask,
-            'labels': all_labels,
-        }
-    else:
-        input_ids, attention_mask, labels, seq_lens = tokenize_later_items(
-            item_seq=item_seq[-(max_item_seq_len+1):],
-            pad_labels=False
-        )
-        return {
-            'input_ids': [input_ids],
-            'attention_mask': [attention_mask],
-            'labels': [labels[-1:]],
-        }
+    #     return {
+    #         'input_ids': all_input_ids,
+    #         'attention_mask': all_attention_mask,
+    #         'labels': all_labels,
+    #     }
+    # else:
+    input_ids, attention_mask, labels, seq_lens = tokenize_first_n_items(
+        item_seq=item_seq[-(max_item_seq_len+1):],
+        tokenizer=tokenizer,
+        num_codebooks=num_codebooks,
+        max_item_seq_len=max_item_seq_len,
+    )
+    return {
+        'input_ids': input_ids,
+        'attention_mask': attention_mask,
+        'labels': labels,
+        'seq_lens': seq_lens,
+    }
 
 
 def tokenize(
@@ -125,9 +128,9 @@ def tokenize(
     tokenized_datasets = {}
     for split in datasets:
         tokenized_item_seq = []
-        for value in datasets[split].values():
+        for value in datasets[split]['item_seq']:
             tokenized_item_seq.append(tokenize_function(
-                example=value,
+                original_item_seq=value,
                 item2sid=item2sid,
                 tokenizer=tokenizer,
                 split=split,
@@ -138,40 +141,15 @@ def tokenize(
     return tokenized_datasets
 
 
-# Create Train, Val and Test Dataloaders
-def create_dataloader(
-    datasets: dict, 
-    train_batch_size: int, 
-    eval_batch_size: int
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    train_dataloader = DataLoader(
-        datasets['train'],
-        batch_size=train_batch_size,
-        shuffle=True,
-        num_workers=8
-    )
-    val_dataloader = DataLoader(
-        datasets['val'],
-        batch_size=eval_batch_size,
-        shuffle=False,
-        num_workers=8
-    )
-    test_dataloader = DataLoader(
-        datasets['test'],
-        batch_size=eval_batch_size,
-        shuffle=False,
-        num_workers=8
-    )
-    dataloaders = (train_dataloader, val_dataloader, test_dataloader)
-    return dataloaders
+def create_hf_datasets(tokenized_datasets: dict):
+    hf_datasets = DatasetDict({
+        "train": Dataset.from_list(tokenized_datasets["train"]),
+        "val": Dataset.from_list(tokenized_datasets["val"]),
+        "test": Dataset.from_list(tokenized_datasets["test"]),
+    })
 
-
-if __name__ == '__main__':
-    from dataset import AmazonReviews2014
-
-    raw_dataset = AmazonReviews2014(
-        '/home/hzzhang/public_data/amazon_data/AmazonReviews2014', 
-        'Toys_and_Games',
-        'sentence'
+    hf_datasets.set_format(
+        type="torch",
+        columns=["input_ids", "attention_mask", "labels"]
     )
-    split_datasets = raw_dataset.split('leave_one_out')
+    return hf_datasets

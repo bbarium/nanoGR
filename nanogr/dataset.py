@@ -96,6 +96,7 @@ class AmazonReviewsDataset:
         """
         return self.id_mapping['item2id']
     
+    @property
     def max_min_seq_len(self) -> Tuple[int, int]:
         if len(self.all_item_seqs) == 0:
             return (0, 0)
@@ -122,14 +123,11 @@ class AmazonReviewsDataset:
             for item in item_seq:
                 items_for_training.add(item)
     
-        self.log(f'[TOKENIZER] Items for training: {len(items_for_training)} of {self.n_items - 1}')
+        log(f'[TOKENIZER] Items for training: {len(items_for_training)} of {self.n_items - 1}')
         mask = np.zeros(self.n_items - 1, dtype=bool)
         for item in items_for_training:
             mask[self.item2id[item] - 1] = True
         return mask
-
-    def log(self, message, level='info'):
-        return log(message, level)
 
 
 class AmazonReviews2014(AmazonReviewsDataset):
@@ -142,7 +140,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         super(AmazonReviews2014, self).__init__(root, name, process_mode)
 
         self._check_available_category()
-        self.log(f'[DATASET] Amazon Reviews 2014 for category: {self.name}')
+        log(f'[DATASET] Amazon Reviews 2014 for category: {self.name}')
 
         self.cache_dir = osp.join(self.root, self.name)
         self._download_and_process_raw()
@@ -209,7 +207,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         Returns:
             list: A list of tuples representing the reviews. Each tuple contains the user ID, item ID, and the interaction timestamp.
         """
-        self.log('[DATASET] Loading reviews...')
+        log('[DATASET] Loading reviews...')
         reviews = []
         for inter in self._parse_gz(path):
             user = inter['reviewerID']
@@ -259,7 +257,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         Note:
             The remapped user and item IDs start from 1. The ID 0 is reserved for padding `[PAD]`.
         """
-        self.log('[DATASET] Remapping user and item IDs...')
+        log('[DATASET] Remapping user and item IDs...')
         for user, items in item_seqs.items():
             if user not in self.id_mapping['user2id']:
                 self.id_mapping['user2id'][user] = len(self.id_mapping['id2user'])
@@ -293,22 +291,20 @@ class AmazonReviews2014(AmazonReviewsDataset):
         seq_file = osp.join(output_path, 'all_item_seqs.json')
         id_mapping_file = osp.join(output_path, 'id_mapping.json')
         if osp.exists(seq_file) and osp.exists(id_mapping_file):
-            self.log('[DATASET] Reviews have been processed...')
+            log('[DATASET] Reviews have been processed...')
             with open(seq_file, 'r') as f:
                 all_item_seqs = json.load(f)
             with open(id_mapping_file, 'r') as f:
                 id_mapping = json.load(f)
             return all_item_seqs, id_mapping
 
-        self.log('[DATASET] Processing reviews...')
-
-        # Load reviews
+        log('[DATASET] Processing reviews...')
         reviews = self._load_reviews(input_path)
         item_seqs = self._get_item_seqs(reviews)
         all_item_seqs, id_mapping = self._remap_ids(item_seqs)
 
         # Save data
-        self.log('[DATASET] Saving mapping data...')
+        log('[DATASET] Saving mapping data...')
         with open(seq_file, 'w') as f:
             json.dump(all_item_seqs, f)
         with open(id_mapping_file, 'w') as f:
@@ -326,7 +322,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         Returns:
             dict: A dictionary containing the filtered metadata.
         """
-        self.log('[DATASET] Loading metadata...')
+        log('[DATASET] Loading metadata...')
         data = {}
         item_asins = set(item2id.keys())
         for info in tqdm(self._parse_gz(path)):
@@ -363,10 +359,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
             sentence = clean_text(raw)
         return sentence + ' '
 
-    def _extract_meta_sentences(
-        self,
-        metadata: dict
-    ) -> dict:
+    def _extract_meta_sentences(self, metadata: dict) -> dict:
         """
         Extracts meta sentences from the given metadata dictionary.
 
@@ -376,7 +369,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         Returns:
             dict: A dictionary mapping items to their corresponding meta sentences.
         """
-        self.log('[DATASET] Extracting meta sentences...')
+        log('[DATASET] Extracting meta sentences...')
         item2meta = {}
         for item, meta in tqdm(metadata.items()):
             meta_sentence = ''
@@ -407,11 +400,11 @@ class AmazonReviews2014(AmazonReviewsDataset):
         """
         meta_file = osp.join(output_path, f'metadata.{self.process_mode}.json')
         if osp.exists(meta_file):
-            self.log('[DATASET] Metadata has been processed...')
+            log('[DATASET] Metadata has been processed...')
             with open(meta_file, 'r') as f:
                 return json.load(f)
 
-        self.log(f'[DATASET] Processing metadata, mode: {self.process_mode}')
+        log(f'[DATASET] Processing metadata, mode: {self.process_mode}')
         
         if self.process_mode is None:
             # No metadata processing required
