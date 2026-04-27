@@ -1,156 +1,107 @@
-from typing import Tuple
+from typing import Any
 
-from torch.utils.data import DataLoader
+import torch
+from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
-from datasets import Dataset, DatasetDict
 
 
-def SeqDataset():
-    pass
+def build_sid_text(item_ids: list[Any], item2sid: dict[Any, list[str]]) -> list[str]:
+    return [''.join(item2sid[item]) for item in item_ids]
 
 
-# TODO: 为了将超出max_item_seq_len的序列重建为多条，需要对每条序列进行tokenization
-# 目前代码的效率很低，这里可不可以改为batch tokenization的方式。
-# TODO: 这里还有pad_len和max_item_seq_len的冲突，这里我为了保留item的SID不被截断使用的是max_item_seq_len
-def tokenize_with_padding(
-    item_seq: list, 
-    tokenizer: AutoTokenizer,
-    num_codebooks: int, 
-    max_item_seq_len:int,
-    ignored_label: int=-100,
-) -> tuple:
-    """
-    Tokenizes the first n items in the given item_seq.
-    The losses for the first n items can be computed by only forwarding once.
+class ItemSeqDataset(Dataset):
+    def __init__(self, split_dataset: dict, item2sid: dict, split: str):
+        super().__init__()
+        self.split = split
+        self.samples = []
 
-    Args:
-        item_seq (list): The item sequence that contains the first n items.
+        for user, history, target in zip(
+            split_dataset['user'],
+            split_dataset['item_seq'],
+            split_dataset['fut_item'],
+        ):
+            history_sids = build_sid_text(history, item2sid)
+            target_sids = ''.join(item2sid[target])
 
-    Returns:
-        tuple: A tuple containing the tokenized input_ids, attention_mask, labels, and seq_len.
-    """
-    
-    # input_ids = tokenizer.encode(''.join(item_seq), return_tensors='pt').squeeze()
-    history, target = item_seq[:-1], item_seq[-1]
-
-    history_ids = tokenizer.encode('<|sid_start|>' + ''.join(history) + '<|sid_end|><|rec|>', add_special_tokens=False)
-    target_ids = tokenizer.encode(target + tokenizer.eos_token, add_special_tokens=False)
-    input_ids = history_ids + target_ids
-    seq_len = len(input_ids)
-    
-    labels = [ignored_label] * len(history_ids) + target_ids.copy()
-    attention_mask = [1] * len(input_ids)
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_tokens
-
-    # 根据序列长度和SID的码本数量计算需要padding的长度
-    if len(history) < max_item_seq_len:
-        pad_lens = (max_item_seq_len + 1) * num_codebooks + 4 - seq_len
-        input_ids = [tokenizer.pad_token_id] * pad_lens + input_ids
-        attention_mask = [0] * pad_lens + attention_mask
-        labels = [ignored_label] * pad_lens + labels
-    
-    return input_ids, attention_mask, labels, seq_len
-
-
-def tokenize_function(
-    original_item_seq: dict,
-    item2sid: dict,
-    tokenizer: AutoTokenizer,
-    split: str,
-    max_item_seq_len: int,
-) -> dict:
-    """
-
-    """
-    num_codebooks = len(next(iter(item2sid.values())))
-    item_seq = [''.join(item2sid[item]) for item in original_item_seq] # Convert item IDs into SIDs
-
-    if split == 'train':
-        n_return_examples = max(len(item_seq) - max_item_seq_len, 1)
-
-        # Tokenize the first n items if len(item_seq) <= max_item_seq_len + 1
-        # Add 1 as the target item is not included in the input sequence
-        input_ids, attention_mask, labels, seq_len = tokenize_with_padding(
-            item_seq=item_seq[:min(len(item_seq), max_item_seq_len+1)],
-            tokenizer=tokenizer,
-            num_codebooks=num_codebooks,
-            max_item_seq_len=max_item_seq_len,
-        )
-        all_tokenized_seq = [{"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels, "seq_len": seq_len}]
-
-        # Tokenize the later items if len(item_seq) > max_item_seq_len + 1
-        for i in range(1, n_return_examples):
-            cur_item_seq = item_seq[i:i+max_item_seq_len+1]
-            input_ids, attention_mask, labels, seq_len = tokenize_with_padding(
-                item_seq=cur_item_seq,
-                tokenizer=tokenizer,
-                num_codebooks=num_codebooks,
-                max_item_seq_len=max_item_seq_len,
+            self.samples.append(
+                {
+                    'user': user,
+                    'prompt_text': '<|sid_start|>' + ''.join(history_sids) + '<|sid_end|><|rec|>',
+                    'label_text': target_sids,
+                }
             )
-            all_tokenized_seq.append({"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels, "seq_len": seq_len})
 
-        return all_tokenized_seq
-    else:
-        input_ids, attention_mask, labels, seq_len = tokenize_with_padding(
-            item_seq=item_seq[-(max_item_seq_len+1):],
-            tokenizer=tokenizer,
-            num_codebooks=num_codebooks,
-            max_item_seq_len=max_item_seq_len,
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> dict:
+        return self.samples[index]
+
+
+class ItemSeqCollator:
+    def __init__(self, tokenizer: AutoTokenizer, ignored_label: int = -100):
+        self.tokenizer = tokenizer
+        self.ignored_label = ignored_label
+
+    def __call__(self, batch: list[dict]) -> dict[str, torch.Tensor]:
+        prompt_texts = [sample['prompt_text'] for sample in batch]
+        label_texts = [sample['label_text'] + self.tokenizer.eos_token for sample in batch]
+
+        prompt_tokens = self.tokenizer(
+            prompt_texts,
+            add_special_tokens=False,
+            return_attention_mask=False,
         )
+        label_tokens = self.tokenizer(
+            label_texts,
+            add_special_tokens=False,
+            return_attention_mask=False,
+        )
+
+        input_ids = []
+        labels = []
+        attention_masks = []
+        max_length = 0
+
+        for prompt_ids, label_ids in zip(prompt_tokens['input_ids'], label_tokens['input_ids']):
+            merged_ids = prompt_ids + label_ids
+            input_ids.append(merged_ids)
+            labels.append([self.ignored_label] * len(prompt_ids) + label_ids.copy())
+            max_length = max(max_length, len(merged_ids))
+
+        for index, merged_ids in enumerate(input_ids):
+            pad_length = max_length - len(merged_ids)
+            input_ids[index] = [self.tokenizer.pad_token_id] * pad_length + merged_ids
+            labels[index] = [self.ignored_label] * pad_length + labels[index]
+            attention_masks.append([0] * pad_length + [1] * len(merged_ids))
+
         return {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'labels': labels,
-            'seq_len': seq_len,
+            'input_ids': torch.tensor(input_ids, dtype=torch.long),
+            'attention_mask': torch.tensor(attention_masks, dtype=torch.long),
+            'labels': torch.tensor(labels, dtype=torch.long),
         }
 
 
-def tokenize(
-    datasets: dict, 
-    item2sid: dict, 
+def create_text_dataloader(
+    dataset: Dataset,
     tokenizer: AutoTokenizer,
-    max_item_seq_len: int,
-) -> dict:
-    """
-    Tokenizes the given datasets.
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int,
+    prefetch_factor: int,
+) -> DataLoader:
+    persistent_workers = num_workers > 0
+    dataloader_kwargs = {
+        'dataset': dataset,
+        'batch_size': batch_size,
+        'shuffle': shuffle,
+        'num_workers': num_workers,
+        'pin_memory': True,
+        'persistent_workers': persistent_workers,
+        'collate_fn': ItemSeqCollator(tokenizer),
+    }
 
-    Args:
-        datasets (dict): A dictionary of datasets to tokenize.
+    if persistent_workers:
+        dataloader_kwargs['prefetch_factor'] = prefetch_factor
 
-    Returns:
-        dict: A dictionary of tokenized datasets.
-    """
-    tokenized_datasets = {}
-    for split in datasets:
-        tokenized_item_seq = []
-        for value in datasets[split]['item_seq']:
-            if split == 'train':
-                samples = tokenize_function(original_item_seq=value, item2sid=item2sid, tokenizer=tokenizer, split=split, max_item_seq_len=max_item_seq_len)
-                tokenized_item_seq = tokenized_item_seq + samples
-            else:
-                tokenized_item_seq.append(tokenize_function(
-                    original_item_seq=value,
-                    item2sid=item2sid,
-                    tokenizer=tokenizer,
-                    split=split,
-                    max_item_seq_len=max_item_seq_len
-                ))
-        tokenized_datasets[split] = tokenized_item_seq
-
-    return tokenized_datasets
-
-
-def create_hf_datasets(tokenized_datasets: dict):
-    hf_datasets = DatasetDict({
-        "train": Dataset.from_list(tokenized_datasets["train"]),
-        "val": Dataset.from_list(tokenized_datasets["val"]),
-        "test": Dataset.from_list(tokenized_datasets["test"]),
-    })
-
-    hf_datasets.set_format(
-        type="torch",
-        columns=["input_ids", "attention_mask", "labels"]
-    )
-    return hf_datasets    
+    return DataLoader(**dataloader_kwargs)

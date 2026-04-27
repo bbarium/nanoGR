@@ -16,7 +16,7 @@ from transformers import (
 )
 
 from nanogr.dataset import AmazonReviews2014
-from nanogr.dataloader import tokenize, create_hf_datasets
+from nanogr.dataloader import ItemSeqDataset, create_text_dataloader
 from nanogr.utils import seed_everything, log, NEW_TOKENS
 
 
@@ -43,49 +43,82 @@ def collision_mitigation(item2sid: dict, codebook_size: int=256) -> dict:
     return new_item2sid
 
 
-def extend_tokenization_(tokenizer: AutoTokenizer, item2sid: dict):
+def extend_tokenization_(tokenizer: AutoTokenizer, num_codebooks: int, codebook_size: int):
     new_tokens = []
-    for sid in item2sid.values():
-        new_tokens += sid
-    new_tokens = sorted(set(new_tokens))  # sort to ensure deterministic token ID assignment across runs
-    tokenizer.add_tokens(new_tokens + NEW_TOKENS) # add all sids and new special token ('<|sid_start|>', '<|sid_end|>', '<|rec|>') into the tokenizer
+    for digit in range(num_codebooks):
+        new_tokens += \
+            [f'<{chr(97+digit)}_{i + codebook_size * digit + 1}>' for i in range(codebook_size)] # Notice: SID starts from 1
+
+    tokenizer.add_tokens(new_tokens + NEW_TOKENS) # add SIDs and new special tokens ('<|sid_start|>', '<|sid_end|>', '<|rec|>') into the tokenizer
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = "left"
 
 
+class BatchTokenizedTrainer(Trainer):
+    def __init__(self, *args, train_dataloader=None, eval_dataloader=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._train_dataloader = train_dataloader
+        self._eval_dataloader = eval_dataloader
+
+    def get_train_dataloader(self):
+        if self._train_dataloader is not None:
+            return self._train_dataloader
+        return super().get_train_dataloader()
+
+    def get_eval_dataloader(self, eval_dataset=None):
+        if eval_dataset is not None and eval_dataset is not self.eval_dataset:
+            return super().get_eval_dataloader(eval_dataset)
+        if self._eval_dataloader is not None:
+            return self._eval_dataloader
+        return super().get_eval_dataloader(eval_dataset)
+
+
 def gr_pipeline():
     seed_everything(args.seed)
     
-    # TODO: 添加多模态数据集
     # Load Raw Dataset
     raw_dataset = AmazonReviews2014(args.data_path, args.category, args.metadata)
-    split_datasets = raw_dataset.split(args.split_strategy)
-    max_len, min_len = raw_dataset.max_min_seq_len
-    log(f'[DATASET] Maximum/Minimum lengths of item sequences: {max_len}, {min_len}')
+    max_raw_len, min_raw_len = raw_dataset.max_min_seq_len
+    log(f'[DATASET] Maximum/Minimum lengths of item sequences: {max_raw_len}, {min_raw_len}')
+
+    # TODO: For max_seq_len == -1, we should directly use the raw item sequences.
+    log(f'[DATASET] Create Train/Val/Test splits via {args.split_strategy}...')
+    max_seq_len = -1 if args.max_seq_length >= max_raw_len else args.max_seq_length # -1 - using raw item sequences
+    split_datasets = raw_dataset.split(args.split_strategy, max_seq_len)
     
     log(f'[TOKENIZER] Loading semantic IDs from {args.sem_ids_path}...')
-    item2sid = json.load(open(args.sem_ids_path, 'r'))
-    item2sid = collision_mitigation(item2sid)
-       
+    with open(args.sem_ids_path, 'r') as file:
+        item2sid = json.load(file)
+    item2sid = collision_mitigation(item2sid, args.codebook_size)
+    
     # Instantiate a tokenization and add new SIDs
     log(f'[TOKENIZER] Add new SIDs to the Tokenization...')
     tokenizer = AutoTokenizer.from_pretrained(args.gr_path)
     old_vocab_size = len(tokenizer)
-    extend_tokenization_(tokenizer, item2sid)
+    extend_tokenization_(tokenizer, args.num_codebooks+1, args.codebook_size)
     new_vocab_size = len(tokenizer)
     log(f'[TOKENIZER] New vocabulary size: {new_vocab_size}, the number of new tokens: {new_vocab_size-old_vocab_size}')
-    
-    # Create train/val/test splits
-    # TODO: 不应该从本地加载tokenized dataset，这可能会导致模型误加载基于上一个tokenizer生成的数据集，此时数据集里的token id和tokenizer的token id是不匹配的
-    max_seq_length = min(args.max_seq_length, max_len)
-    if not os.path.exists(args.tmp_path):
-        tokenized_datasets = tokenize(split_datasets, item2sid, tokenizer, max_seq_length)
-        torch.save(tokenized_datasets, f'./{args.category}.tokenized_datasets.pt')
-    else:
-        tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
-    hf_datasets = create_hf_datasets(tokenized_datasets)
 
+    train_dataset = ItemSeqDataset(split_datasets['train'], item2sid, split='train')
+    val_dataset = ItemSeqDataset(split_datasets['val'], item2sid, split='val')
+    train_dataloader = create_text_dataloader(
+        dataset=train_dataset,
+        tokenizer=tokenizer,
+        batch_size=args.per_device_batch_size,
+        shuffle=True,
+        num_workers=args.dataloader_num_workers,
+        prefetch_factor=args.dataloader_prefetch_factor,
+    )
+    val_dataloader = create_text_dataloader(
+        dataset=val_dataset,
+        tokenizer=tokenizer,
+        batch_size=args.per_device_batch_size,
+        shuffle=False,
+        num_workers=args.dataloader_num_workers,
+        prefetch_factor=args.dataloader_prefetch_factor,
+    )
+    
     # Instantiate an LLM
     if args.train_from_scratch:
         config = AutoConfig.from_pretrained(args.gr_path)
@@ -114,8 +147,8 @@ def gr_pipeline():
         warmup_ratio=args.warmup_ratio,
         lr_scheduler_type=args.lr_scheduler_type,
         optim=args.optim,
-        bf16=True, # not suitable for P40
-        tf32=True, # not suitable for P40
+        bf16=True,
+        tf32=True,
         dataloader_num_workers=args.dataloader_num_workers,
         dataloader_pin_memory=True,
         dataloader_persistent_workers=True,
@@ -137,12 +170,14 @@ def gr_pipeline():
         torch_compile=args.enable_torch_compile
     )
 
-    trainer = Trainer(
+    trainer = BatchTokenizedTrainer(
         model=model,
-        train_dataset=hf_datasets['train'],
-        eval_dataset=hf_datasets['val'],
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
         args=train_args,
         processing_class=tokenizer,
+        train_dataloader=train_dataloader,
+        eval_dataloader=val_dataloader,
         # callbacks=[EarlyStoppingCallback(early_stopping_patience=args.early_stop)]
     )
     trainer.train()
@@ -152,8 +187,8 @@ def gr_pipeline():
 if __name__ == '__main__':
     parse = argparse.ArgumentParser()
     # Parameters of local file paths
-    parse.add_argument('--data_path', type=str, default='./AmazonReviews')
-    parse.add_argument('--gr_path', type=str, default='./Checkpoints/Qwen3.5-0.8B')
+    parse.add_argument('--data_path', type=str, default='/home/hzzhang/public_data/AmazonReviews2014')
+    parse.add_argument('--gr_path', type=str, default='/home/hzzhang/Checkpoints/Qwen3-0.6B')
     parse.add_argument('--sem_ids_path', type=str, default='./outputs/sentence-t5-base_Toys_and_Games_RQVAE3x256.dim32.sem_ids')
     parse.add_argument('--output_path', type=str, default='./outputs')
     parse.add_argument('--log_path', type=str, default='./logs')
@@ -165,7 +200,7 @@ if __name__ == '__main__':
     
     # Parameters of the LLM
     parse.add_argument('--seed', type=int, default=42)
-    parse.add_argument('--per_device_batch_size', type=int, default=60)
+    parse.add_argument('--per_device_batch_size', type=int, default=30)
     parse.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parse.add_argument('--epochs', type=int, default=500)
     parse.add_argument('--save_and_eval_strategy', type=str, default='epoch')
@@ -182,6 +217,8 @@ if __name__ == '__main__':
     
     parse.add_argument("--dataloader_num_workers", type=int, default=8)
     parse.add_argument("--dataloader_prefetch_factor", type=int, default=4)
+    parse.add_argument('--num_codebooks', type=int, default=3)
+    parse.add_argument('--codebook_size', type=int, default=256)
     parse.add_argument('--max_seq_length', type=int, default=30)
     parse.add_argument('--train_from_scratch', action='store_true')
     parse.add_argument("--enable_torch_compile", action="store_true")

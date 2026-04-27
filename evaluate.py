@@ -242,7 +242,7 @@ def evaluate():
 
     log(f'[MODEL] Loading the model checkpoint from {args.ckpt_path}...')
     model = AutoModelForCausalLM.from_pretrained(args.ckpt_path, device_map='auto')
-    
+
     # tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
     test_dataset = tokenized_datasets['test']
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=Collator(tokenizer))

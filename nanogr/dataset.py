@@ -457,7 +457,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
             output_path=processed_data_path
         )
     
-    def _leave_one_out(self, all_item_seqs: dict) -> dict:
+    def _leave_one_out(self, all_item_seqs: dict, max_seq_len: int) -> dict:
         """
         Splits the dataset into train, validation, and test sets using the leave-one-out strategy.
 
@@ -466,22 +466,27 @@ class AmazonReviews2014(AmazonReviewsDataset):
                   Each dataset is represented as a dictionary with 'user' and 'item_seq' keys.
                   The 'user' key contains a list of users, and the 'item_seq' key contains a list of item sequences.
         """
-        datasets = {'train': {'user': [], 'item_seq': []},
-                    'val':   {'user': [], 'item_seq': []},
-                    'test':  {'user': [], 'item_seq': []}}
+        datasets = {
+            'train': {'user': [], 'item_seq': [], 'fut_item': []},
+            'val':   {'user': [], 'item_seq': [], 'fut_item': []},
+            'test':  {'user': [], 'item_seq': [], 'fut_item': []}
+        }
         for user in all_item_seqs:
             datasets['test']['user'].append(user)
-            datasets['test']['item_seq'].append(all_item_seqs[user])
+            datasets['test']['item_seq'].append(all_item_seqs[user][-(max_seq_len+1):-1])
+            datasets['test']['fut_item'].append(all_item_seqs[user][-1])
             if len(all_item_seqs[user]) > 1:
                 datasets['val']['user'].append(user)
-                datasets['val']['item_seq'].append(all_item_seqs[user][:-1])
+                datasets['val']['item_seq'].append(all_item_seqs[user][-(max_seq_len+2):-2])
+                datasets['val']['fut_item'].append(all_item_seqs[user][-2])
             if len(all_item_seqs[user]) > 2:
                 datasets['train']['user'].append(user)
-                datasets['train']['item_seq'].append(all_item_seqs[user][:-2])
+                datasets['train']['item_seq'].append(all_item_seqs[user][-(max_seq_len+3):-3])
+                datasets['train']['fut_item'].append(all_item_seqs[user][-3])
         return datasets
 
 
-    def split(self, split_strategy: str=None) -> dict:
+    def split(self, split_strategy: str=None, max_seq_len: int=-1) -> dict:
         """
         Split the dataset into train, validation, and test sets based on the specified split strategy.
 
@@ -489,7 +494,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
             datasets (dict): A dictionary containing the train and test datasets.
         """
         if split_strategy in ['leave_one_out']:
-            datasets = self._leave_one_out(self.all_item_seqs)
+            datasets = self._leave_one_out(self.all_item_seqs, max_seq_len)
         else:
             raise NotImplementedError(f'Split strategy [{split_strategy}] not implemented.')
 
