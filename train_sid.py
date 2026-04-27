@@ -4,9 +4,13 @@ import torch
 
 from hyperopt import tpe, hp, fmin
 
-from nanogr.tokenization import RQVAETokenizer, OPQTokenizer
+from nanogr.tokenization import (
+    RQVAETokenizer, 
+    OPQTokenizer,
+    KMeansTokenizer,
+)
 from nanogr.dataset import AmazonReviews2014
-from nanogr.encoder import encode_sent_to_emb
+from nanogr.nn.encoder import encode_sent_to_emb
 from nanogr.utils import seed_everything, create_log_file, log
 
 
@@ -26,37 +30,37 @@ def train(params: dict=None):
     sent_embd = encode_sent_to_emb(raw_dataset, args.projector_path, args.proj_batch_size, device)
     sent_embd = torch.from_numpy(sent_embd)
     
-    # tokenizer = RQVAETokenizer(
-    #     id2item=raw_dataset.id_mapping['id2item'],
-    #     num_codebooks=args.num_codebooks,
-    #     codebook_size=args.codebook_size,
-    #     in_channels=sent_embd.size(1),
-    #     hid_channels=args.hid_channels,
-    #     mlp_channels=args.mlp_channels,
-    #     dropout=args.dropout,
-    #     quant_loss_weight=args.quant_loss_weight,
-    #     beta=args.beta,
-    #     enable_kmeans_init=args.kmeans_init,
-    #     kmeans_iters=args.kmeans_iters,
-    #     lr=args.lr,
-    #     wd=args.wd,
-    #     epochs=args.epochs,
-    #     num_warmup_steps=args.num_warmup_steps,
-    #     eval_step=args.eval_step,
-    #     batch_size=args.train_batch_size,
-    #     category=args.category,
-    # )
-    tokenizer = OPQTokenizer(
+    tokenizer = RQVAETokenizer(
+        id2item=raw_dataset.id_mapping['id2item'],
         num_codebooks=args.num_codebooks,
         codebook_size=args.codebook_size,
-        max_item_seq_len=100,
-        output_path='./outputs',
-        id2item=raw_dataset.id_mapping['id2item'],
+        in_channels=sent_embd.size(1),
+        hid_channels=args.hid_channels,
+        mlp_channels=args.mlp_channels,
+        dropout=args.dropout,
+        quant_loss_weight=args.quant_loss_weight,
+        beta=args.beta,
+        enable_kmeans_init=args.kmeans_init,
+        kmeans_iters=args.kmeans_iters,
+        lr=args.lr,
+        wd=args.wd,
+        epochs=args.epochs,
+        num_warmup_steps=args.num_warmup_steps,
+        eval_step=args.eval_step,
+        batch_size=args.train_batch_size,
+        category=args.category,
     )
+    # tokenizer = OPQTokenizer(
+    #     num_codebooks=args.num_codebooks,
+    #     codebook_size=args.codebook_size,
+    #     max_item_seq_len=100,
+    #     output_path='./outputs',
+    #     id2item=raw_dataset.id_mapping['id2item'],
+    # )
     
-    raw_dataset.split(args.split_strategy)
-    training_item_mask = raw_dataset.training_item_mask()
-    item2sid = tokenizer.emb_to_sid(sent_embd, training_item_mask)
+    # raw_dataset.split(args.split_strategy)
+    # training_item_mask = raw_dataset.training_item_mask()
+    item2sid = tokenizer.emb_to_sid(sent_embd)
     return item2sid
 
 
@@ -70,7 +74,7 @@ if __name__ == '__main__':
     parse.add_argument('--projector_path', type=str, default='/home/hzzhang/Checkpoints/sentence-t5-base')
     
     # Parameters of raw datasets
-    parse.add_argument('--category', type=str, default='Toys_and_Games') # [Toys_and_Games, CDs_and_Vinyl]
+    parse.add_argument('--category', type=str, default='Sports_and_Outdoors') # [Toys_and_Games, CDs_and_Vinyl]
     parse.add_argument('--metadata', type=str, default='sentence')
     parse.add_argument('--split_strategy', type=str, default='leave_one_out')
     

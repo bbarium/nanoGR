@@ -236,7 +236,6 @@ class AmazonReviews2014(AmazonReviewsDataset):
         for user, item_time in item_seqs.items():
             item_time.sort(key=lambda x: x[1])
             item_seqs[user] = [_[0] for _ in item_time]
-            max_length = max(len(item_seqs[user]), max_length)
         return item_seqs
 
     def _remap_ids(self, item_seqs: dict) -> tuple[dict, dict]:

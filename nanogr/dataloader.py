@@ -12,7 +12,7 @@ def SeqDataset():
 # TODO: 为了将超出max_item_seq_len的序列重建为多条，需要对每条序列进行tokenization
 # 目前代码的效率很低，这里可不可以改为batch tokenization的方式。
 # TODO: 这里还有pad_len和max_item_seq_len的冲突，这里我为了保留item的SID不被截断使用的是max_item_seq_len
-def tokenize_first_n_items(
+def tokenize_with_padding(
     item_seq: list, 
     tokenizer: AutoTokenizer,
     num_codebooks: int, 
@@ -27,7 +27,7 @@ def tokenize_first_n_items(
         item_seq (list): The item sequence that contains the first n items.
 
     Returns:
-        tuple: A tuple containing the tokenized input_ids, attention_mask, labels, and seq_lens.
+        tuple: A tuple containing the tokenized input_ids, attention_mask, labels, and seq_len.
     """
     
     # input_ids = tokenizer.encode(''.join(item_seq), return_tensors='pt').squeeze()
@@ -36,7 +36,7 @@ def tokenize_first_n_items(
     history_ids = tokenizer.encode('<|sid_start|>' + ''.join(history) + '<|sid_end|><|rec|>', add_special_tokens=False)
     target_ids = tokenizer.encode(target + tokenizer.eos_token, add_special_tokens=False)
     input_ids = history_ids + target_ids
-    seq_lens = len(input_ids)
+    seq_len = len(input_ids)
     
     labels = [ignored_label] * len(history_ids) + target_ids.copy()
     attention_mask = [1] * len(input_ids)
@@ -46,12 +46,12 @@ def tokenize_first_n_items(
 
     # 根据序列长度和SID的码本数量计算需要padding的长度
     if len(history) < max_item_seq_len:
-        pad_lens = (max_item_seq_len + 1) * num_codebooks + 4 - seq_lens
-        input_ids.extend([tokenizer.pad_token_id] * pad_lens)
-        attention_mask.extend([0] * pad_lens)
-        labels.extend([ignored_label] * pad_lens)
+        pad_lens = (max_item_seq_len + 1) * num_codebooks + 4 - seq_len
+        input_ids = [tokenizer.pad_token_id] * pad_lens + input_ids
+        attention_mask = [0] * pad_lens + attention_mask
+        labels = [ignored_label] * pad_lens + labels
     
-    return input_ids, attention_mask, labels, seq_lens
+    return input_ids, attention_mask, labels, seq_len
 
 
 def tokenize_function(
@@ -67,47 +67,44 @@ def tokenize_function(
     num_codebooks = len(next(iter(item2sid.values())))
     item_seq = [''.join(item2sid[item]) for item in original_item_seq] # Convert item IDs into SIDs
 
-    # if split == 'train':
-    #     n_return_examples = max(len(item_seq) - max_item_seq_len, 1)
+    if split == 'train':
+        n_return_examples = max(len(item_seq) - max_item_seq_len, 1)
 
-    #     # Tokenize the first n items if len(item_seq) <= max_item_seq_len + 1
-    #     # Add 1 as the target item is not included in the input sequence
-    #     input_ids, attention_mask, labels, seq_lens = tokenize_first_n_items(
-    #         item_seq=item_seq[:min(len(item_seq), max_item_seq_len+1)],
-    #         tokenizer=tokenizer,
-    #         num_codebooks=num_codebooks,
-    #         max_item_seq_len=max_item_seq_len,
-    #     )
-    #     all_input_ids, all_attention_mask, all_labels, all_seq_lens = \
-    #         [input_ids], [attention_mask], [labels], [seq_lens]
+        # Tokenize the first n items if len(item_seq) <= max_item_seq_len + 1
+        # Add 1 as the target item is not included in the input sequence
+        input_ids, attention_mask, labels, seq_len = tokenize_with_padding(
+            item_seq=item_seq[:min(len(item_seq), max_item_seq_len+1)],
+            tokenizer=tokenizer,
+            num_codebooks=num_codebooks,
+            max_item_seq_len=max_item_seq_len,
+        )
+        all_tokenized_seq = [{"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels, "seq_len": seq_len}]
 
-    #     # Tokenize the later items if len(item_seq) > max_item_seq_len + 1
-    #     for i in range(1, n_return_examples):
-    #         cur_item_seq = item_seq[i:i+max_item_seq_len+1]
-    #         input_ids, attention_mask, labels, seq_lens = tokenize_later_items(cur_item_seq)
-    #         all_input_ids.append(input_ids)
-    #         all_attention_mask.append(attention_mask)
-    #         all_labels.append(labels)
-    #         all_seq_lens.append(seq_lens)
+        # Tokenize the later items if len(item_seq) > max_item_seq_len + 1
+        for i in range(1, n_return_examples):
+            cur_item_seq = item_seq[i:i+max_item_seq_len+1]
+            input_ids, attention_mask, labels, seq_len = tokenize_with_padding(
+                item_seq=cur_item_seq,
+                tokenizer=tokenizer,
+                num_codebooks=num_codebooks,
+                max_item_seq_len=max_item_seq_len,
+            )
+            all_tokenized_seq.append({"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels, "seq_len": seq_len})
 
-    #     return {
-    #         'input_ids': all_input_ids,
-    #         'attention_mask': all_attention_mask,
-    #         'labels': all_labels,
-    #     }
-    # else:
-    input_ids, attention_mask, labels, seq_lens = tokenize_first_n_items(
-        item_seq=item_seq[-(max_item_seq_len+1):],
-        tokenizer=tokenizer,
-        num_codebooks=num_codebooks,
-        max_item_seq_len=max_item_seq_len,
-    )
-    return {
-        'input_ids': input_ids,
-        'attention_mask': attention_mask,
-        'labels': labels,
-        'seq_lens': seq_lens,
-    }
+        return all_tokenized_seq
+    else:
+        input_ids, attention_mask, labels, seq_len = tokenize_with_padding(
+            item_seq=item_seq[-(max_item_seq_len+1):],
+            tokenizer=tokenizer,
+            num_codebooks=num_codebooks,
+            max_item_seq_len=max_item_seq_len,
+        )
+        return {
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'labels': labels,
+            'seq_len': seq_len,
+        }
 
 
 def tokenize(
@@ -129,13 +126,17 @@ def tokenize(
     for split in datasets:
         tokenized_item_seq = []
         for value in datasets[split]['item_seq']:
-            tokenized_item_seq.append(tokenize_function(
-                original_item_seq=value,
-                item2sid=item2sid,
-                tokenizer=tokenizer,
-                split=split,
-                max_item_seq_len=max_item_seq_len
-            ))
+            if split == 'train':
+                samples = tokenize_function(original_item_seq=value, item2sid=item2sid, tokenizer=tokenizer, split=split, max_item_seq_len=max_item_seq_len)
+                tokenized_item_seq = tokenized_item_seq + samples
+            else:
+                tokenized_item_seq.append(tokenize_function(
+                    original_item_seq=value,
+                    item2sid=item2sid,
+                    tokenizer=tokenizer,
+                    split=split,
+                    max_item_seq_len=max_item_seq_len
+                ))
         tokenized_datasets[split] = tokenized_item_seq
 
     return tokenized_datasets
@@ -152,4 +153,4 @@ def create_hf_datasets(tokenized_datasets: dict):
         type="torch",
         columns=["input_ids", "attention_mask", "labels"]
     )
-    return hf_datasets
+    return hf_datasets    

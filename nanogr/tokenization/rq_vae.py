@@ -8,8 +8,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import get_constant_schedule_with_warmup
 
-from nanogr.tokenization import AbstractTokenizer
-from nanogr.gr_models import RQVAE
+from .tokenizer import AbstractTokenizer
+from .residual_vq_conv import RQVAE
 from nanogr.utils import log
 
 
