@@ -10,51 +10,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from nanogr.utils import log, seed_everything
 from nanogr.dataset import AmazonReviews2014
+from nanogr.dataloader import (
+    ItemSeqDataset, 
+    create_text_dataloader
+)
 from finetune import collision_mitigation
-
-
-class Collator(object):
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token_id = 0
-
-    def __call__(self, batch_data):
-        # 在评估时，input_ids不应该包含target_item_ids
-        # 从dataloader.py可知，input_ids的结构是：history_ids + target_ids
-        # 我们需要只使用history_ids部分进行生成
-        processed_input_ids = []
-        processed_attention_mask = []
-        label_ids = [data['labels'] for data in batch_data]
-        
-        for data in batch_data:
-            # 找到<|rec|> token的位置，它标记了历史序列的结束
-            input_ids = data['input_ids']
-            attention_mask = data['attention_mask']
-            
-            if isinstance(input_ids, list):
-                # 找到<|rec|> token的位置
-                rec_token_id = self.tokenizer.encode('<|rec|>', add_special_tokens=False)[0]
-                try:
-                    rec_index = input_ids.index(rec_token_id)
-                    # 取到<|rec|> token之前的部分（包含<|rec|>）
-                    history_part = input_ids[:rec_index + 1]
-                    history_attention = attention_mask[:rec_index + 1]
-                    processed_input_ids.append(history_part)
-                    processed_attention_mask.append(history_attention)
-                except ValueError:
-                    # 如果找不到<|rec|> token，使用完整的input_ids和attention_mask
-                    processed_input_ids.append(input_ids)
-                    processed_attention_mask.append(attention_mask)
-            else:
-                processed_input_ids.append(input_ids)
-                processed_attention_mask.append(attention_mask)
-        
-        tokenized_input = {
-            'input_ids': torch.tensor(processed_input_ids),
-            'attention_mask': torch.tensor(processed_attention_mask)
-        }
-        return (tokenized_input, label_ids)
 
 
 class Trie(object):
@@ -141,8 +101,7 @@ class Trie(object):
         return self.get(value)
 
 
-def prefix_allowed_tokens_fn(candidate_trie, eos_token_id):
-    rec_token_id = 152396  # the special token id, <|rec|>
+def prefix_allowed_tokens_fn(candidate_trie: Trie, eos_token_id: int=None, rec_token_id: int=None):
 
     def prefix_allowed_tokens(batch_id, sentence):
         sentence_list = sentence.tolist()
@@ -233,33 +192,94 @@ def evaluate():
     seed_everything(args.seed)
     
     log(f'[TOKENIZER] Loading semantic IDs from {args.sem_ids_path}...')
-    item2sid = json.load(open(args.sem_ids_path, 'r'))
+    with open(args.sem_ids_path, 'r') as file:
+        item2sid = json.load(file)
     item2sid = collision_mitigation(item2sid)
     
     # Instantiate a tokenization and add new SIDs
     log(f'[TOKENIZER] Loading the tokenization from {args.ckpt_path}...')
     tokenizer = AutoTokenizer.from_pretrained(args.ckpt_path)
 
+    raw_dataset = AmazonReviews2014(args.data_path, args.category, args.metadata)
+    max_raw_len, min_raw_len = raw_dataset.max_min_seq_len
+    log(f'[DATASET] Maximum/Minimum lengths of item sequences: {max_raw_len}, {min_raw_len}')
+
+    log(f'[DATASET] Create Train/Val/Test splits via {args.split_strategy}...')
+    max_seq_len = -1 if args.max_seq_length >= max_raw_len else args.max_seq_length
+    split_datasets = raw_dataset.split(args.split_strategy, max_seq_len)
+
     log(f'[MODEL] Loading the model checkpoint from {args.ckpt_path}...')
     model = AutoModelForCausalLM.from_pretrained(args.ckpt_path, device_map='auto')
-
-    # tokenized_datasets = torch.load(args.tmp_path, weights_only=False)
-    test_dataset = tokenized_datasets['test']
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=Collator(tokenizer))
+    
+    test_dataset = ItemSeqDataset(split_datasets['test'], item2sid)
+    test_loader = create_text_dataloader(
+        dataset=test_dataset,
+        tokenizer=tokenizer,
+        batch_size=args.per_device_batch_size,
+        shuffle=False,
+        num_workers=args.dataloader_num_workers,
+        prefetch_factor=args.dataloader_prefetch_factor,
+    )
     log(f'[DATASET] Test Dataset Size: {len(test_dataset)}')
     
     all_item_sids = [''.join(map(str, sid)) for sid in item2sid.values()]
     candidate_trie = Trie([tokenizer.encode(candidate) for candidate in all_item_sids])
     prefix_allowed_tokens = prefix_allowed_tokens_fn(candidate_trie, tokenizer.eos_token_id)
 
+    ignored_label = -100
+    pad_token_id = tokenizer.pad_token_id
+
     all_prompt_results, metrics_results = [], {}
     total = 0
+    model.eval()
     with torch.no_grad():
         for batch_data in tqdm(test_loader):
-            input, target = batch_data
-            input_ids, attention_mask = \
-                input['input_ids'].to(device), input['attention_mask'].to(device)
-            
+            # batch_data is a dict from ItemSeqCollator: {input_ids, attention_mask, labels}
+            full_input_ids = batch_data['input_ids'].to(device)
+            full_attention_mask = batch_data['attention_mask'].to(device)
+            full_labels = batch_data['labels'].to(device)
+
+            # Separate prompt (history + <|rec|>) from target (label) using labels mask.
+            # In ItemSeqCollator: label positions are non-ignored; prompt positions are ignored (-100).
+            # The collator uses LEFT padding implicitly for pad, but prompt + label are concatenated left-to-right.
+            # We need to crop each sample to its prompt portion for generation.
+            label_mask = (full_labels != ignored_label)  # True on target tokens
+            # Determine per-sample prompt length (tokens before the first target token) and target length
+            batch_size = full_input_ids.size(0)
+            seq_len = full_input_ids.size(1)
+
+            prompt_lens = []
+            target_token_lists = []
+            for i in range(batch_size):
+                target_positions = label_mask[i].nonzero(as_tuple=False).squeeze(-1)
+                if target_positions.numel() == 0:
+                    # No target found; treat the whole sequence as prompt
+                    prompt_end = seq_len
+                    target_tokens = []
+                else:
+                    prompt_end = target_positions[0].item()
+                    target_tokens = full_labels[i, target_positions].tolist()
+                prompt_lens.append(prompt_end)
+                target_token_lists.append(target_tokens)
+
+            # Build left-padded prompt tensors so that <|rec|> is right-aligned for generation
+            max_prompt_len = max(prompt_lens)
+            input_ids = torch.full(
+                (batch_size, max_prompt_len), pad_token_id,
+                dtype=full_input_ids.dtype, device=device,
+            )
+            attention_mask = torch.zeros(
+                (batch_size, max_prompt_len),
+                dtype=full_attention_mask.dtype, device=device,
+            )
+            for i in range(batch_size):
+                p_len = prompt_lens[i]
+                if p_len == 0:
+                    continue
+                # Right-align prompt within max_prompt_len (left padding)
+                input_ids[i, max_prompt_len - p_len:] = full_input_ids[i, :p_len]
+                attention_mask[i, max_prompt_len - p_len:] = full_attention_mask[i, :p_len]
+
             output = model.generate(
                 inputs=input_ids,
                 attention_mask=attention_mask,
@@ -274,14 +294,15 @@ def evaluate():
             output_ids, scores = output['sequences'][:, -4:], output['sequences_scores']
             output = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
             
+            # Decode targets from labels
             target_texts = []
-            for target_ids in target:
-                target_tokens = [t for t in target_ids if t != -100] # filter out ignored labels (-100) before decoding
-                if target_tokens and target_tokens[-1] == tokenizer.eos_token_id: # remove eos_token if present at the end
+            for target_tokens in target_token_lists:
+                # remove eos_token if present at the end
+                if target_tokens and target_tokens[-1] == tokenizer.eos_token_id:
                     target_tokens = target_tokens[:-1]
                 target_text = tokenizer.decode(target_tokens, skip_special_tokens=True)
-                target_texts.append(target_text.strip())
-            
+                target_texts.append(target_text.strip().replace(' ', ''))
+
             log(f'Predictive SIDs: {output[:5]}')
             log(f'Target SIDs: {target_texts[:5]}')
             topk_res = get_topk_results(output, scores, target_texts, args.num_beams,
@@ -289,7 +310,7 @@ def evaluate():
 
             batch_metrics_res = get_metrics_results(topk_res)
             
-            total += len(target)
+            total += len(target_texts)
             for m, res in batch_metrics_res.items():
                 if m not in metrics_results:
                     metrics_results[m] = res
@@ -300,7 +321,7 @@ def evaluate():
             for m in metrics_results:
                 temp[m] = metrics_results[m] / total
             print(temp)
-        
+
 
 if __name__ == '__main__':
     parse = argparse.ArgumentParser()
@@ -308,11 +329,15 @@ if __name__ == '__main__':
     parse.add_argument('--gpu', type=int, default=0)
     parse.add_argument('--seed', type=int, default=42)
     parse.add_argument('--batch_size', type=int, default=32)
+    parse.add_argument('--per_device_batch_size', type=int, default=32)
+    parse.add_argument('--max_seq_length', type=int, default=30)
+    parse.add_argument('--dataloader_num_workers', type=int, default=4)
+    parse.add_argument('--dataloader_prefetch_factor', type=int, default=4)
     
     # Parameters of local file paths
-    parse.add_argument('--data_path', type=str, default='./AmazonReviews2014')
+    parse.add_argument('--data_path', type=str, default='/workspace/team_driver/hzzhang/AmazonReviews')
     parse.add_argument('--sem_ids_path', type=str, default='./outputs/sentence-t5-base_Beauty_RQVAE3x256.dim32.sem_ids')
-    parse.add_argument('--ckpt_path', type=str, default='./outputs/checkpoint-30500')
+    parse.add_argument('--ckpt_path', type=str, default='./outputs/checkpoint-3584')
     
     # Parameters of the dataset
     parse.add_argument('--category', type=str, default='Beauty')
@@ -325,4 +350,5 @@ if __name__ == '__main__':
     
     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
     
+    # while True:
     evaluate()
