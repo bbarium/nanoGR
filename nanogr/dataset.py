@@ -123,11 +123,14 @@ class AmazonReviewsDataset:
             for item in item_seq:
                 items_for_training.add(item)
     
-        log(f'[TOKENIZER] Items for training: {len(items_for_training)} of {self.n_items - 1}')
+        self.log(f'[TOKENIZER] Items for training: {len(items_for_training)} of {self.n_items - 1}')
         mask = np.zeros(self.n_items - 1, dtype=bool)
         for item in items_for_training:
             mask[self.item2id[item] - 1] = True
         return mask
+
+    def log(self, message, level='info'):
+        return log(message, level)
 
 
 class AmazonReviews2014(AmazonReviewsDataset):
@@ -140,7 +143,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         super(AmazonReviews2014, self).__init__(root, name, process_mode)
 
         self._check_available_category()
-        log(f'[DATASET] Amazon Reviews 2014 for category: {self.name}')
+        self.log(f'[DATASET] Amazon Reviews 2014 for category: {self.name}')
 
         self.cache_dir = osp.join(self.root, self.name)
         self._download_and_process_raw()
@@ -207,7 +210,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         Returns:
             list: A list of tuples representing the reviews. Each tuple contains the user ID, item ID, and the interaction timestamp.
         """
-        log('[DATASET] Loading reviews...')
+        self.log('[DATASET] Loading reviews...')
         reviews = []
         for inter in self._parse_gz(path):
             user = inter['reviewerID']
@@ -256,7 +259,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         Note:
             The remapped user and item IDs start from 1. The ID 0 is reserved for padding `[PAD]`.
         """
-        log('[DATASET] Remapping user and item IDs...')
+        self.log('[DATASET] Remapping user and item IDs...')
         for user, items in item_seqs.items():
             if user not in self.id_mapping['user2id']:
                 self.id_mapping['user2id'][user] = len(self.id_mapping['id2user'])
@@ -290,20 +293,22 @@ class AmazonReviews2014(AmazonReviewsDataset):
         seq_file = osp.join(output_path, 'all_item_seqs.json')
         id_mapping_file = osp.join(output_path, 'id_mapping.json')
         if osp.exists(seq_file) and osp.exists(id_mapping_file):
-            log('[DATASET] Reviews have been processed...')
+            self.log('[DATASET] Reviews have been processed...')
             with open(seq_file, 'r') as f:
                 all_item_seqs = json.load(f)
             with open(id_mapping_file, 'r') as f:
                 id_mapping = json.load(f)
             return all_item_seqs, id_mapping
 
-        log('[DATASET] Processing reviews...')
+        self.log('[DATASET] Processing reviews...')
+
+        # Load reviews
         reviews = self._load_reviews(input_path)
         item_seqs = self._get_item_seqs(reviews)
         all_item_seqs, id_mapping = self._remap_ids(item_seqs)
 
         # Save data
-        log('[DATASET] Saving mapping data...')
+        self.log('[DATASET] Saving mapping data...')
         with open(seq_file, 'w') as f:
             json.dump(all_item_seqs, f)
         with open(id_mapping_file, 'w') as f:
@@ -321,7 +326,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         Returns:
             dict: A dictionary containing the filtered metadata.
         """
-        log('[DATASET] Loading metadata...')
+        self.log('[DATASET] Loading metadata...')
         data = {}
         item_asins = set(item2id.keys())
         for info in tqdm(self._parse_gz(path)):
@@ -358,7 +363,10 @@ class AmazonReviews2014(AmazonReviewsDataset):
             sentence = clean_text(raw)
         return sentence + ' '
 
-    def _extract_meta_sentences(self, metadata: dict) -> dict:
+    def _extract_meta_sentences(
+        self,
+        metadata: dict
+    ) -> dict:
         """
         Extracts meta sentences from the given metadata dictionary.
 
@@ -368,7 +376,7 @@ class AmazonReviews2014(AmazonReviewsDataset):
         Returns:
             dict: A dictionary mapping items to their corresponding meta sentences.
         """
-        log('[DATASET] Extracting meta sentences...')
+        self.log('[DATASET] Extracting meta sentences...')
         item2meta = {}
         for item, meta in tqdm(metadata.items()):
             meta_sentence = ''
@@ -399,11 +407,11 @@ class AmazonReviews2014(AmazonReviewsDataset):
         """
         meta_file = osp.join(output_path, f'metadata.{self.process_mode}.json')
         if osp.exists(meta_file):
-            log('[DATASET] Metadata has been processed...')
+            self.log('[DATASET] Metadata has been processed...')
             with open(meta_file, 'r') as f:
                 return json.load(f)
 
-        log(f'[DATASET] Processing metadata, mode: {self.process_mode}')
+        self.log(f'[DATASET] Processing metadata, mode: {self.process_mode}')
         
         if self.process_mode is None:
             # No metadata processing required
@@ -457,44 +465,55 @@ class AmazonReviews2014(AmazonReviewsDataset):
             output_path=processed_data_path
         )
     
-    def _leave_one_out(self, all_item_seqs: dict, max_seq_len: int) -> dict:
-        """
-        Splits the dataset into train, validation, and test sets using the leave-one-out strategy.
-
-        Returns:
-            dict: A dictionary containing the train, validation, and test datasets.
-                  Each dataset is represented as a dictionary with 'user' and 'item_seq' keys.
-                  The 'user' key contains a list of users, and the 'item_seq' key contains a list of item sequences.
-        """
+    def _leave_one_out(
+        self,
+        all_item_seqs: dict,
+        max_seq_len: int,
+        training_window: str='sliding',
+    ) -> dict:
         datasets = {
             'train': {'user': [], 'item_seq': [], 'fut_item': []},
             'val':   {'user': [], 'item_seq': [], 'fut_item': []},
             'test':  {'user': [], 'item_seq': [], 'fut_item': []}
         }
         for user in all_item_seqs:
+            seq = all_item_seqs[user]
+            n = len(seq)
+
             datasets['test']['user'].append(user)
-            datasets['test']['item_seq'].append(all_item_seqs[user][-(max_seq_len+1):-1])
-            datasets['test']['fut_item'].append(all_item_seqs[user][-1])
-            if len(all_item_seqs[user]) > 1:
+            datasets['test']['item_seq'].append(seq[-(max_seq_len + 1):-1])
+            datasets['test']['fut_item'].append(seq[-1])
+
+            if n > 1:
                 datasets['val']['user'].append(user)
-                datasets['val']['item_seq'].append(all_item_seqs[user][-(max_seq_len+2):-2])
-                datasets['val']['fut_item'].append(all_item_seqs[user][-2])
-            if len(all_item_seqs[user]) > 2:
-                datasets['train']['user'].append(user)
-                datasets['train']['item_seq'].append(all_item_seqs[user][-(max_seq_len+3):-3])
-                datasets['train']['fut_item'].append(all_item_seqs[user][-3])
+                datasets['val']['item_seq'].append(seq[-(max_seq_len + 2):-2])
+                datasets['val']['fut_item'].append(seq[-2])
+
+            if n > 2:
+                if training_window == 'last_only':
+                    datasets['train']['user'].append(user)
+                    datasets['train']['item_seq'].append(seq[-(max_seq_len + 3):-3])
+                    datasets['train']['fut_item'].append(seq[-3])
+                elif training_window == 'sliding':
+                    train_seq = seq[:-2]
+                    for end in range(1, len(train_seq)):
+                        history = train_seq[max(0, end - max_seq_len):end]
+                        target = train_seq[end]
+                        datasets['train']['user'].append(user)
+                        datasets['train']['item_seq'].append(history)
+                        datasets['train']['fut_item'].append(target)
+                else:
+                    raise ValueError(f'Unknown training_window: {training_window}')
         return datasets
 
-
-    def split(self, split_strategy: str=None, max_seq_len: int=-1) -> dict:
-        """
-        Split the dataset into train, validation, and test sets based on the specified split strategy.
-
-        Returns:
-            datasets (dict): A dictionary containing the train and test datasets.
-        """
+    def split(
+        self, 
+        split_strategy: str=None,
+        max_seq_len: int=-1,
+        training_window: str='sliding',
+    ) -> dict:
         if split_strategy in ['leave_one_out']:
-            datasets = self._leave_one_out(self.all_item_seqs, max_seq_len)
+            datasets = self._leave_one_out(self.all_item_seqs, max_seq_len, training_window=training_window)
         else:
             raise NotImplementedError(f'Split strategy [{split_strategy}] not implemented.')
 

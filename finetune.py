@@ -187,8 +187,8 @@ def gr_pipeline():
 if __name__ == '__main__':
     parse = argparse.ArgumentParser()
     # Parameters of local file paths
-    parse.add_argument('--data_path', type=str, default='/home/hzzhang/public_data/AmazonReviews2014')
-    parse.add_argument('--gr_path', type=str, default='/home/hzzhang/Checkpoints/Qwen3-0.6B')
+    parse.add_argument('--data_path', type=str, default='./data/AmazonReviews')
+    parse.add_argument('--gr_path', type=str, default='./checkpoints/Qwen3-0.6B')
     parse.add_argument('--sem_ids_path', type=str, default='./outputs/sentence-t5-base_Toys_and_Games_RQVAE3x256.dim32.sem_ids')
     parse.add_argument('--output_path', type=str, default='./outputs')
     parse.add_argument('--log_path', type=str, default='./logs')

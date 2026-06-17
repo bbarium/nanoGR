@@ -1,10 +1,13 @@
+import argparse
+import html
 import os
 import random
 import re
-import html
 import yaml
 import os.path as osp
 import numpy as np
+from collections import defaultdict
+from typing import Dict, List
 from datetime import datetime
 from copy import deepcopy
 from pathlib import Path
@@ -15,7 +18,6 @@ import logzero
 from logzero import logger
 
 import torch
-import torch.nn as nn
 from torch.types import Tensor
 
 
@@ -105,7 +107,7 @@ class Config(dict):
             raise AttributeError(name)
 
 
-def list_to_str(l: Union[list, str], remove_blank=False) -> str:
+def list_to_str(input_list: Union[list, str], remove_blank=False) -> str:
     """
     Converts a list or a string to a string representation.
 
@@ -116,10 +118,10 @@ def list_to_str(l: Union[list, str], remove_blank=False) -> str:
         str: The string representation of the input.
     """
     ret = ''
-    if isinstance(l, list):
-        ret = ', '.join(map(str, l))
+    if isinstance(input_list, list):
+        ret = ', '.join(map(str, input_list))
     else:
-        ret = l
+        ret = input_list
     if remove_blank:
         ret = ret.replace(' ', '')
     return ret
@@ -179,9 +181,23 @@ def sinkhorn_algorithm(distances, epsilon, sinkhorn_iterations):
     return Q
 
 
-def delete_module(module: nn.Module, module_name: str) -> None:
-    if hasattr(module, module_name):
-        delattr(module, module_name)
-        
-    for _, submodule in module.named_children():
-        delete_module(submodule, module_name)
+def collision_mitigation(item2sid: Dict[str, List[int]], codebook_size: int = 256) -> Dict[str, List[int]]:
+    new_item2sid = deepcopy(item2sid)
+
+    sid_counts = defaultdict(int)
+    for key, value in new_item2sid.items():
+        prefix = "_".join(map(str, value))
+        new_item2sid[key] = value + [sid_counts[prefix]]
+        sid_counts[prefix] += 1
+
+    max_collision = max(sid_counts.values()) if sid_counts else 0
+    if max_collision > codebook_size:
+        raise ValueError(f"The maximum number of conflicting SIDs ({max_collision}) is greater than the pre-defined codebook size ({codebook_size}).")
+    
+    for item in new_item2sid.keys():
+        sids = []
+        for digit in range(len(new_item2sid[item])):
+            sid = new_item2sid[item][digit] + codebook_size * digit + 1
+            sids.append(sid)
+        new_item2sid[item] = sids
+    return new_item2sid

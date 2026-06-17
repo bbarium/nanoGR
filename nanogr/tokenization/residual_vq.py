@@ -55,7 +55,7 @@ class VectorQuantization(nn.Module):
         
         if not self.is_initialized and self.training:
             self.init_emb(latent)
-        
+
         distances = torch.cdist(latent, self.centroids.weight)
         indices = torch.argmin(distances, dim=-1)
         quantized = self.centroids(indices).view(x.shape)
@@ -161,6 +161,7 @@ class RQVAE(nn.Module):
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         x = self.encoder(x)
+
         embd, rq_loss, indices = self.rq(x)
         out = self.decoder(embd)
         return out, rq_loss, indices

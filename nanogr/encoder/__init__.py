@@ -3,7 +3,7 @@ import os.path as osp
 
 import torch
 from torch import device
-
+from transformers import T5EncoderModel, T5Config
 from sentence_transformers import SentenceTransformer
 
 from nanogr.dataset import AmazonReviewsDataset
@@ -31,7 +31,8 @@ def encode_sent_to_emb(
     sent_emb_path = osp.join(output_path, f'{dataset.name}.sentence-t5-base.sent_emb')
     if osp.exists(sent_emb_path):
         log(f'[TOKENIZER] Loading sentence embeddings from {sent_emb_path}...')
-        sent_embd = np.fromfile(sent_emb_path, dtype=np.float32).reshape(-1, sent_emb_dim)
+        sent_embd = np.fromfile(sent_emb_path, dtype=np.float32)
+        sent_embd = sent_embd.reshape(-1, sent_emb_dim)
     else:
         log(f'[TOKENIZER] Encoding sentence embeddings...')    
         assert dataset.process_mode == 'sentence', 'TIGERTokenizer only supports sentence metadata.'
@@ -55,5 +56,32 @@ def encode_sent_to_emb(
         else:
             raise NotImplementedError()
     log(f'[TOKENIZER] Sentence embeddings shape: {sent_embd.shape}')
-    sent_embd.tofile(sent_emb_path)
+    sent_embd.astype(np.float32).tofile(sent_emb_path)
     return sent_embd
+
+
+def init_encoder(backbone: str, config):
+    """Build the encoder backbone used by ``SemanticIDEncoderDecoder``.
+
+    Args:
+        backbone: Name of the backbone implementation. Currently only ``'t5'``
+            is supported.
+        config: A mapping (``dict`` or attribute-style namespace) carrying the
+            following fields: ``vocab_size``, ``d_model``, ``d_kv``,
+            ``num_heads``, ``dropout``, ``dim_feedforward``, ``num_layers``.
+    """
+    cfg = config if isinstance(config, dict) else vars(config)
+    if backbone == 't5':
+        t5_encoder_config = T5Config(
+            vocab_size=cfg['vocab_size'],
+            d_model=cfg['d_model'],
+            d_kv=cfg['d_kv'],
+            num_heads=cfg['num_heads'],
+            dropout_rate=cfg['dropout'],
+            d_ff=cfg['dim_feedforward'],
+            num_layers=cfg['num_layers'],
+        )
+        encoder = T5EncoderModel(t5_encoder_config)
+    else:
+        raise NotImplementedError()
+    return encoder

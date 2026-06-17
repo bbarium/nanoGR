@@ -2,23 +2,16 @@ import argparse
 
 import torch
 
-from hyperopt import tpe, hp, fmin
-
 from nanogr.tokenization import (
     RQVAETokenizer, 
     OPQTokenizer,
-    KMeansTokenizer,
 )
 from nanogr.dataset import AmazonReviews2014
-from nanogr.nn.encoder import encode_sent_to_emb
+from nanogr.encoder import encode_sent_to_emb
 from nanogr.utils import seed_everything, create_log_file, log
 
 
-def train(params: dict=None):
-    if params:
-        for key in params.keys():
-            if key in args.__dict__.keys():
-                args.__dict__[key] = params[key]
+def train():
     log(args)
     
     seed_everything(args.seed)
@@ -28,7 +21,7 @@ def train(params: dict=None):
     
     # Generate item embeddings from metadata
     sent_embd = encode_sent_to_emb(raw_dataset, args.projector_path, args.proj_batch_size, device)
-    sent_embd = torch.from_numpy(sent_embd)
+    sent_embd = torch.from_numpy(sent_embd).float()
     
     tokenizer = RQVAETokenizer(
         id2item=raw_dataset.id_mapping['id2item'],
@@ -50,71 +43,48 @@ def train(params: dict=None):
         batch_size=args.train_batch_size,
         category=args.category,
     )
-    # tokenizer = OPQTokenizer(
-    #     num_codebooks=args.num_codebooks,
-    #     codebook_size=args.codebook_size,
-    #     max_item_seq_len=100,
-    #     output_path='./outputs',
-    #     id2item=raw_dataset.id_mapping['id2item'],
-    # )
     
-    # raw_dataset.split(args.split_strategy)
-    # training_item_mask = raw_dataset.training_item_mask()
-    item2sid = tokenizer.emb_to_sid(sent_embd)
-    return item2sid
+    item2sid, collision_rate, utilization = tokenizer.emb_to_sid(sent_embd, device)
+    return
 
 
 if __name__ == '__main__':
     parse = argparse.ArgumentParser()
     # Shared parameters
     parse.add_argument('--gpu', type=int, default=0)
-    parse.add_argument('--seed', type=int, default=2024)
-    parse.add_argument('--data_path', type=str, default='/home/hzzhang/public_data/amazon_data/AmazonReviews2014')
+    parse.add_argument('--seed', type=int, default=42)
+    parse.add_argument('--log_path', type=str, default='./log')
+    parse.add_argument('--data_path', type=str, default='./data/AmazonReviews')
     parse.add_argument('--output_path', type=str, default='./outputs')
-    parse.add_argument('--projector_path', type=str, default='/home/hzzhang/Checkpoints/sentence-t5-base')
+    parse.add_argument('--projector_path', type=str, default='./checkpoints/sentence-t5-base')
     
     # Parameters of raw datasets
-    parse.add_argument('--category', type=str, default='Sports_and_Outdoors') # [Toys_and_Games, CDs_and_Vinyl]
+    parse.add_argument('--category', type=str, default='Toys_and_Games') # [Toys_and_Games, Beauty, Sports_and_Outdoors, CDs_and_Vinyl]
     parse.add_argument('--metadata', type=str, default='sentence')
     parse.add_argument('--split_strategy', type=str, default='leave_one_out')
     
     # Parameters of the projector
     parse.add_argument('--lr', type=float, default=1e-3)
-    parse.add_argument('--wd', type=float, default=0.0)
-    parse.add_argument('--epochs', type=float, default=8000)
+    parse.add_argument('--wd', type=float, default=1e-4)
+    parse.add_argument('--epochs', type=float, default=30000)
     parse.add_argument('--eval_step', type=float, default=10)
     parse.add_argument('--num_warmup_steps', type=int, default=50)
-    parse.add_argument('--train_batch_size', type=float, default=2048)
+    parse.add_argument('--train_batch_size', type=float, default=8192)
     parse.add_argument('--proj_batch_size', type=int, default=512)
     
     # Parameters of the tokenizer
     parse.add_argument('--num_codebooks', type=int, default=3)
-    parse.add_argument('--codebook_size', type=int, default=256)
-    parse.add_argument('--hid_channels', type=int, default=32)
+    parse.add_argument('--codebook_size', type=int, default=32)
+    parse.add_argument('--hid_channels', type=int, default=128)
     parse.add_argument('--mlp_channels', type=int, nargs='+', default=[256, 128, 64])
     parse.add_argument('--kmeans_init', type=bool, default=True)
     parse.add_argument('--kmeans_iters', type=int, default=300)
     parse.add_argument('--dropout', type=float, default=0.0)
-    parse.add_argument('--quant_loss_weight', type=float, default=1.0)
-    parse.add_argument('--beta', type=float, default=0.25)
+    parse.add_argument('--quant_loss_weight', type=float, default=0.4)
+    parse.add_argument('--beta', type=float, default=0.5)
     args = parse.parse_args()
     
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     
-    create_log_file("/home/hzzhang/nanoGR/logs", '260305_Toys_and_Games.log')
+    create_log_file(args.log_path)
     train()
-    
-    # space = {
-    #     'lr': hp.choice('lr', [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]),
-    #     'wd': hp.choice('wd', [0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]),
-    #     'dropout': hp.choice('dropout', [0.0, 0.2, 0.4, 0.6]),
-    #     'quant_loss_weight': hp.choice('quant_loss_weight', [0.2, 0.4, 0.6, 0.8, 1.0]),
-    #     'beta': hp.choice('beta', [0.25, 0.5, 0.75, 1.0]),
-    # }
-    # best = fmin(
-    #     fn=train,
-    #     space=space,
-    #     algo=tpe.suggest,
-    #     max_evals=50
-    # )
-    # print(best)

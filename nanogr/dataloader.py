@@ -12,8 +12,8 @@ def build_sid_text(item_ids: list[Any], item2sid: dict[Any, list[str]]) -> list[
 class ItemSeqDataset(Dataset):
     def __init__(self, split_dataset: dict, item2sid: dict, split: str):
         super().__init__()
-        self.split = split
         self.samples = []
+        self.split = split
 
         for user, history, target in zip(
             split_dataset['user'],
