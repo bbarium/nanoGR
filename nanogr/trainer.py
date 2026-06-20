@@ -36,7 +36,6 @@ def _is_main_process() -> bool:
 
 
 def _unwrap(model: nn.Module) -> nn.Module:
-    """Strip ``DistributedDataParallel`` / ``torch.compile`` wrappers."""
     inner = model
     if hasattr(inner, "module"):
         inner = inner.module
@@ -46,7 +45,6 @@ def _unwrap(model: nn.Module) -> nn.Module:
 
 
 def _build_param_groups(model: nn.Module, weight_decay: float):
-    """Exclude bias / LayerNorm / token-level params from weight decay."""
     decay, no_decay = [], []
     no_decay_keywords = ("bias", "layer_norm", "layernorm", "ln_", "norm")
     for name, param in model.named_parameters():
@@ -76,7 +74,6 @@ class Trainer:
         self.rank = _get_rank()
         self.world_size = _get_world_size()
 
-        # Move first, wrap in DDP afterwards (DDP requires params to live on the right device).
         model = model.to(self.device)
         if self.is_distributed:
             if dist.is_available() and dist.is_initialized():
@@ -151,7 +148,7 @@ class Trainer:
         self.model.eval()
         unwrapped = _unwrap(self.model)
 
-        # Local accumulators (per-rank); will be reduced across ranks at the end.
+        # The evaluation metrics will be reduced across ranks at the end.
         device = self.device
         total_loss = torch.zeros(1, device=device)
         total_examples = torch.zeros(1, device=device)
@@ -240,7 +237,7 @@ class Trainer:
             loss = unwrapped.compute_loss(decoder_output, fut_ids)
             scaled_loss = loss / accum_steps
 
-            # On non-boundary steps, skip gradient sync to save AllReduce traffic in DDP.
+            # Skip gradient sync to save AllReduce traffic in DDP.
             is_boundary = (step % accum_steps == 0) or (step == len(train_loader))
             if self.is_distributed and not is_boundary:
                 with self.model.no_sync():
