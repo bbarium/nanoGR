@@ -81,3 +81,7 @@ python finetune.py \
     --sem_ids_path ./outputs/sentence-t5-base_Toys_and_Games_RQVAE3x256.dim32.sem_ids \
     --output_path ./outputs
 ```
+
+---
+
+### Taming the TIGER
