@@ -113,7 +113,7 @@ def gr_pipeline(args):
         output_path=args.output_path, is_distributed=is_distributed, rank=rank
     )
     dataloaders = create_dataloaders(sid_seq_datasets, num_workers=args.dataloader_num_workers,
-        per_device_batch_size=args.per_device_batch_size, eval_batch_size=args.eval_batch, 
+        per_device_batch_size=args.per_device_batch_size, eval_batch_size=args.eval_batch_size,
         prefetch_factor=args.dataloader_prefetch_factor, is_distributed=is_distributed, rank=rank, world_size=world_size
     )
     trainer_config = build_trainer_config(args, dataloaders[0], is_distributed, local_rank)

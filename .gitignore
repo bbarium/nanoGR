@@ -1,0 +1,43 @@
+# Python caches and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Experiment data, models, caches, and logs
+/data/
+/datasets/
+/checkpoints/
+/outputs/
+/logs/
+/log/
+/runs/
+/envs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.sem_ids
+*.sent_emb
+
+# Source backups and environment archives
+*.bak
+*.tmp
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# OS metadata
+.DS_Store
+Thumbs.db

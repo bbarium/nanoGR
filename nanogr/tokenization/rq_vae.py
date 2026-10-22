@@ -167,8 +167,9 @@ class RQVAETokenizer(AbstractTokenizer):
         if not os.path.exists(sem_ids_path):
             item2sid, codebooks, collision_rate, utilization = self._generate_semantic_id(sent_embd, device)
             log(f'[TOKENIZER] Saving semantic IDs to {sem_ids_path}...')
-            # with open(sem_ids_path, 'w') as f:
-            #     json.dump(item2sid, f)
+            os.makedirs(self.output_path, exist_ok=True)
+            with open(sem_ids_path, 'w') as f:
+                json.dump(item2sid, f)
             # torch.save(codebooks, './outputs/codebooks.pt')
         else:
             log(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')

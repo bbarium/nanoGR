@@ -66,10 +66,10 @@ if __name__ == '__main__':
     # Parameters of the projector
     parse.add_argument('--lr', type=float, default=1e-3)
     parse.add_argument('--wd', type=float, default=1e-4)
-    parse.add_argument('--epochs', type=float, default=30000)
-    parse.add_argument('--eval_step', type=float, default=10)
+    parse.add_argument('--epochs', type=int, default=30000)
+    parse.add_argument('--eval_step', type=int, default=10)
     parse.add_argument('--num_warmup_steps', type=int, default=50)
-    parse.add_argument('--train_batch_size', type=float, default=8192)
+    parse.add_argument('--train_batch_size', type=int, default=8192)
     parse.add_argument('--proj_batch_size', type=int, default=512)
     
     # Parameters of the tokenizer

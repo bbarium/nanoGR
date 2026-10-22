@@ -279,7 +279,25 @@ class Trainer:
 
         best_val_metric, output_metrics = float("-inf"), None
         patience = 0
-        for epoch in range(1, self.configs.epochs + 1):
+        start_epoch = 1
+        resume_path = os.environ.get("NANOGR_RESUME_PATH")
+        if resume_path:
+            ckpt = torch.load(
+                resume_path, map_location=self.device, weights_only=False
+            )
+            for key in ("epochs", "per_device_batch_size",
+                        "gradient_accumulation_steps", "num_warmup_steps"):
+                if ckpt["configs"][key] != self.configs[key]:
+                    raise ValueError(f"恢复配置与原训练不一致: {key}")
+            _unwrap(self.model).load_state_dict(ckpt["model_state_dict"])
+            self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+            start_epoch = int(ckpt["epoch"]) + 1
+            best_val_metric = float(ckpt["metrics"][self.best_metric_key])
+            self._log(f"[RESUME] 从第 {start_epoch} 轮继续训练")
+            output_metrics = self.evaluate(test_dataloader, phase="test-resume")
+            self.save_model_ckpt(ckpt["epoch"], ckpt["metrics"])
+        for epoch in range(start_epoch, self.configs.epochs + 1):
             train_loss = self.train_epoch(train_dataloader, epoch)
             self._log(f"[TRAIN] epoch={epoch} loss={train_loss:.6f}")
 

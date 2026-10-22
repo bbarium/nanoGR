@@ -22,7 +22,13 @@ class SemanticIDDataset(Dataset):
         item2sid: dict=None,
         num_hierarchies: int=None,
         max_history_len: int=None,
+        from_tensors: dict=None,
     ) -> None:
+        if from_tensors is not None:
+            self.input_ids = from_tensors["input_ids"]
+            self.attention_mask = from_tensors["attention_mask"]
+            self.fut_ids = from_tensors["fut_ids"]
+            return
         assert split_dataset is not None and item2sid is not None
         max_token_len = max_history_len * num_hierarchies
 
@@ -32,7 +38,8 @@ class SemanticIDDataset(Dataset):
         assert sid_table.shape[1] == num_hierarchies, \
             f"item2sid hierarchies ({sid_table.shape[1]}) != num_hierarchies ({num_hierarchies})"
 
-        item_seqs, fut_items, n_samples = split_dataset["item_seq"], split_dataset["fut_item"], len(item_seqs)
+        item_seqs, fut_items = split_dataset["item_seq"], split_dataset["fut_item"]
+        n_samples = len(item_seqs)
         input_ids = np.zeros((n_samples, max_token_len), dtype=np.int64)
         attention_mask = np.zeros((n_samples, max_token_len), dtype=np.int64)
         fut_ids = np.zeros((n_samples, num_hierarchies), dtype=np.int64)
@@ -106,6 +113,7 @@ def build_or_load_datasets(
     rank: int,
 ) -> Dict[str, SemanticIDDataset]:
     cache_dir = os.path.join(output_path, "_dataset_cache")
+    os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"semid_{category}.pt")
 
     payload=None
